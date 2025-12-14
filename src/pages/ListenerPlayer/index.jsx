@@ -1032,196 +1032,6 @@ const ListenerPlayer = () => {
     const stored = localStorage.getItem('listenerName');
     return stored || `Ouvinte${Math.floor(Math.random() * 1000)}`;
   });
-
-  // ============================================
-  // ESTADOS DO ROBÔ DO OUVINTE
-  // ============================================
-  const [robotEnabled, setRobotEnabled] = useState(true);
-  const [robotMessage, setRobotMessage] = useState('');
-  const [isRobotTalking, setIsRobotTalking] = useState(false);
-  const [lastDJCommand, setLastDJCommand] = useState('');
-  const robotSpeechRef = useRef(null);
-  const robotIsSpeakingRef = useRef(false);
-  
-  // Comandos que o robô reconhece e suas ações
-  const robotCommands = {
-    'olá': { response: 'Olá! Bem-vindo à rádio!', action: 'greet' },
-    'oi': { response: 'Oi! Como você está?', action: 'greet' },
-    'bom dia': { response: 'Bom dia! Que seu dia seja incrível!', action: 'greet' },
-    'boa tarde': { response: 'Boa tarde! Aproveite a programação!', action: 'greet' },
-    'boa noite': { response: 'Boa noite! Relaxe e curta as músicas!', action: 'greet' },
-    'aumentar volume': { response: 'Aumentando o volume!', action: 'volume_up' },
-    'abaixar volume': { response: 'Abaixando o volume!', action: 'volume_down' },
-    'volume máximo': { response: 'Volume no máximo!', action: 'volume_max' },
-    'volume mínimo': { response: 'Volume no mínimo!', action: 'volume_min' },
-    'pausar': { response: 'Pausando a música!', action: 'pause' },
-    'play': { response: 'Tocando a música!', action: 'play' },
-    'tocar': { response: 'Tocando a música!', action: 'play' },
-    'dançar': { response: 'Vamos dançar juntos! 💃🕺', action: 'dance' },
-    'aplaudir': { response: '👏👏👏 Palmas para o DJ!', action: 'applause' },
-    'curtir': { response: '❤️ Que música incrível!', action: 'like' },
-    'obrigado': { response: 'De nada! Estou aqui para você!', action: 'thanks' },
-    'tep': { response: '👆 Tep tep tep na tela!', action: 'tap' },
-    'seguir': { response: '📱 Sigam o canal!', action: 'follow' },
-    'inscrever': { response: '🔔 Se inscrevam no canal!', action: 'subscribe' },
-  };
-  
-  // Função para fazer o robô falar
-  const makeRobotSpeak = useCallback((text) => {
-    if (!robotEnabled || !text || robotIsSpeakingRef.current) return;
-    
-    robotIsSpeakingRef.current = true;
-    setIsRobotTalking(true);
-    setRobotMessage(text);
-    
-    // Usar Web Speech API para sintetizar voz
-    if ('speechSynthesis' in window) {
-      // Cancelar fala anterior
-      window.speechSynthesis.cancel();
-      
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'pt-BR';
-      utterance.rate = 1.0;
-      utterance.pitch = 1.2; // Voz mais aguda para parecer robótico
-      utterance.volume = 0.8;
-      
-      // Procurar voz em português
-      const voices = window.speechSynthesis.getVoices();
-      const ptVoice = voices.find(v => 
-        v.lang.includes('pt') || 
-        v.name.toLowerCase().includes('portuguese') ||
-        v.name.toLowerCase().includes('brasil')
-      );
-      if (ptVoice) utterance.voice = ptVoice;
-      
-      utterance.onend = () => {
-        robotIsSpeakingRef.current = false;
-        setIsRobotTalking(false);
-        // Limpar mensagem após 3 segundos
-        setTimeout(() => setRobotMessage(''), 3000);
-      };
-      
-      utterance.onerror = () => {
-        robotIsSpeakingRef.current = false;
-        setIsRobotTalking(false);
-      };
-      
-      robotSpeechRef.current = utterance;
-      window.speechSynthesis.speak(utterance);
-    } else {
-      // Fallback sem TTS
-      setTimeout(() => {
-        robotIsSpeakingRef.current = false;
-        setIsRobotTalking(false);
-        setTimeout(() => setRobotMessage(''), 3000);
-      }, 2000);
-    }
-  }, [robotEnabled]);
-  
-  // Função para executar ação do comando
-  const executeRobotAction = useCallback((action) => {
-    switch (action) {
-      case 'volume_up':
-        setVolume(prev => Math.min(100, prev + 20));
-        break;
-      case 'volume_down':
-        setVolume(prev => Math.max(0, prev - 20));
-        break;
-      case 'volume_max':
-        setVolume(100);
-        break;
-      case 'volume_min':
-        setVolume(10);
-        break;
-      case 'pause':
-        if (audioRef.current && !audioRef.current.paused) {
-          audioRef.current.pause();
-          setIsPlaying(false);
-        }
-        break;
-      case 'play':
-        if (audioRef.current && audioRef.current.paused) {
-          audioRef.current.play().catch(console.error);
-          setIsPlaying(true);
-        }
-        break;
-      default:
-        // Outras ações são apenas visuais/de fala
-        break;
-    }
-  }, []);
-  
-  // Processar comando de voz do DJ
-  const processVoiceCommand = useCallback((command) => {
-    if (!robotEnabled || !command) return;
-    
-    const normalizedCommand = command.toLowerCase().trim();
-    setLastDJCommand(normalizedCommand);
-    
-    console.log('🤖 Robô recebeu comando:', normalizedCommand);
-    
-    // Verificar comandos conhecidos
-    for (const [keyword, config] of Object.entries(robotCommands)) {
-      if (normalizedCommand.includes(keyword)) {
-        console.log('🤖 Comando reconhecido:', keyword);
-        makeRobotSpeak(config.response);
-        executeRobotAction(config.action);
-        return;
-      }
-    }
-    
-    // Comando não reconhecido - repetir o que o DJ disse
-    makeRobotSpeak(`O DJ disse: "${command}"`);
-  }, [robotEnabled, makeRobotSpeak, executeRobotAction]);
-  
-  // Listener para comandos de voz do DJ via WebSocket
-  useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket) return;
-    
-    const handleDJVoiceCommand = (data) => {
-      console.log('📡 Comando de voz recebido do DJ:', data);
-      if (data && data.command) {
-        processVoiceCommand(data.command);
-      }
-    };
-    
-    socket.on('dj:voice:command', handleDJVoiceCommand);
-    
-    return () => {
-      socket.off('dj:voice:command', handleDJVoiceCommand);
-    };
-  }, [processVoiceCommand]);
-  
-  // Listener para respostas do robô (perguntas respondidas pelo DJ)
-  useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket) return;
-    
-    const handleRobotAnswer = (data) => {
-      console.log('🤖 Resposta do robô recebida:', data);
-      if (data && data.text && robotEnabled) {
-        // Mostrar a mensagem na bolha do robô
-        setRobotMessage(data.text);
-        setIsRobotTalking(true);
-        
-        // Fazer o robô falar a resposta
-        makeRobotSpeak(data.text);
-        
-        // Limpar mensagem após um tempo
-        setTimeout(() => {
-          setRobotMessage('');
-          setIsRobotTalking(false);
-        }, 8000);
-      }
-    };
-    
-    socket.on('robot:answer', handleRobotAnswer);
-    
-    return () => {
-      socket.off('robot:answer', handleRobotAnswer);
-    };
-  }, [robotEnabled, makeRobotSpeak]);
   
   // Carregar vozes quando disponíveis
   useEffect(() => {
@@ -1405,20 +1215,63 @@ const ListenerPlayer = () => {
           try {
             connectionAttempts = 0; // Reset contador
             console.log('✅ [Socket] Conectado com sucesso:', socketRef.current.id);
-      setSocketReady(true);
-      setStatus('Conectado - Verificando transmissão...');
-      
+            setSocketReady(true);
+            setStatus('Conectado - Verificando transmissão...');
+            
+            // Limpar conexão WebRTC antiga se existir (pode estar em estado ruim)
+            if (peerConnectionRef.current) {
+              const pc = peerConnectionRef.current;
+              const isConnectionBad = pc.connectionState === 'disconnected' || 
+                                     pc.connectionState === 'failed' || 
+                                     pc.connectionState === 'closed' ||
+                                     pc.signalingState === 'closed';
+              
+              if (isConnectionBad) {
+                console.log('🧹 [Connect] Limpando conexão WebRTC antiga...');
+                try {
+                  pc.onconnectionstatechange = null;
+                  pc.oniceconnectionstatechange = null;
+                  pc.ontrack = null;
+                  pc.onicecandidate = null;
+                  if (pc.connectionState !== 'closed') {
+                    pc.close();
+                  }
+                } catch (e) {
+                  console.warn('⚠️ [Connect] Erro ao limpar conexão:', e);
+                }
+                peerConnectionRef.current = null;
+                isWebRTCConnectingRef.current = false;
+                currentBroadcasterIdRef.current = null;
+                setIsLive(false);
+                setConnectionStatus('waiting');
+              }
+            }
+            
+            // Resetar flags de conexão
+            isWebRTCConnectingRef.current = false;
+            connectionStateRef.current = 'idle';
+            offerReceivedRef.current = false;
+            isProcessingOfferRef.current = false; // CRÍTICO: Resetar flag de processamento de offer
+            
             // Emitir watcher após um pequeno delay para garantir que tudo está pronto
-      setTimeout(() => {
+            setTimeout(() => {
               if (socketRef.current?.connected && isMounted) {
                 try {
-          socketRef.current.emit('watcher');
-                  console.log('📡 [Socket] Watcher emitido');
+                  socketRef.current.emit('watcher');
+                  console.log('📡 [Socket] Watcher emitido após conexão');
+                  
+                  // Se após 2 segundos ainda não recebeu broadcaster, tentar novamente
+                  setTimeout(() => {
+                    if (socketRef.current?.connected && isMounted && !currentBroadcasterIdRef.current) {
+                      console.log('📡 [Connect] Reemitindo watcher (não recebeu broadcaster ainda)...');
+                      socketRef.current.emit('watcher');
+                    }
+                  }, 2000);
                 } catch (e) {
                   console.warn('⚠️ [Socket] Erro ao emitir watcher:', e);
                 }
               }
-            }, 300);
+            }, 500); // Aumentar delay para 500ms
           } catch (error) {
             console.error('❌ [Socket] Erro no handler de connect:', error);
           }
@@ -1471,7 +1324,33 @@ const ListenerPlayer = () => {
             // Só atualizar status se não for uma desconexão intencional
             if (reason !== 'io client disconnect') {
               setStatus('Desconectado - Reconectando...');
-          setIsLive(false);
+              setIsLive(false);
+              setConnectionStatus('waiting');
+              
+              // Limpar conexão WebRTC se existir (será recriada após reconexão)
+              if (peerConnectionRef.current) {
+                console.log('🧹 [Disconnect] Limpando conexão WebRTC...');
+                try {
+                  const pc = peerConnectionRef.current;
+                  pc.onconnectionstatechange = null;
+                  pc.oniceconnectionstatechange = null;
+                  pc.ontrack = null;
+                  pc.onicecandidate = null;
+                  if (pc.connectionState !== 'closed') {
+                    pc.close();
+                  }
+                } catch (e) {
+                  console.warn('⚠️ [Disconnect] Erro ao limpar conexão:', e);
+                }
+                peerConnectionRef.current = null;
+                isWebRTCConnectingRef.current = false;
+                currentBroadcasterIdRef.current = null;
+              }
+              
+              // Resetar flags
+              connectionStateRef.current = 'idle';
+              offerReceivedRef.current = false;
+              isProcessingOfferRef.current = false; // CRÍTICO: Resetar flag de processamento de offer
             }
           } catch (error) {
             console.error('❌ [Socket] Erro no handler de disconnect:', error);
@@ -1488,12 +1367,56 @@ const ListenerPlayer = () => {
             setSocketReady(true);
             setStatus('Reconectado - Verificando transmissão...');
             
-            // Emitir watcher novamente
-              setTimeout(() => {
-              if (socketRef.current?.connected && isMounted) {
-                socketRef.current.emit('watcher');
+            // Limpar conexão WebRTC antiga se existir (pode estar em estado ruim)
+            if (peerConnectionRef.current) {
+              const pc = peerConnectionRef.current;
+              const isConnectionBad = pc.connectionState === 'disconnected' || 
+                                     pc.connectionState === 'failed' || 
+                                     pc.connectionState === 'closed' ||
+                                     pc.signalingState === 'closed';
+              
+              if (isConnectionBad) {
+                console.log('🧹 [Reconnect] Limpando conexão WebRTC antiga...');
+                try {
+                  pc.onconnectionstatechange = null;
+                  pc.oniceconnectionstatechange = null;
+                  pc.ontrack = null;
+                  pc.onicecandidate = null;
+                  if (pc.connectionState !== 'closed') {
+                    pc.close();
+                  }
+                } catch (e) {
+                  console.warn('⚠️ [Reconnect] Erro ao limpar conexão:', e);
                 }
-              }, 300);
+                peerConnectionRef.current = null;
+                isWebRTCConnectingRef.current = false;
+                currentBroadcasterIdRef.current = null;
+                setIsLive(false);
+                setConnectionStatus('waiting');
+              }
+            }
+            
+            // Resetar flags de conexão
+            isWebRTCConnectingRef.current = false;
+            connectionStateRef.current = 'idle';
+            offerReceivedRef.current = false;
+            isProcessingOfferRef.current = false; // CRÍTICO: Resetar flag de processamento de offer
+            
+            // Emitir watcher novamente após um delay para garantir que o socket está pronto
+            setTimeout(() => {
+              if (socketRef.current?.connected && isMounted) {
+                console.log('📡 [Reconnect] Emitindo watcher para verificar transmissão...');
+                socketRef.current.emit('watcher');
+                
+                // Se após 2 segundos ainda não recebeu broadcaster, tentar novamente
+                setTimeout(() => {
+                  if (socketRef.current?.connected && isMounted && !currentBroadcasterIdRef.current) {
+                    console.log('📡 [Reconnect] Reemitindo watcher (não recebeu broadcaster ainda)...');
+                    socketRef.current.emit('watcher');
+                  }
+                }, 2000);
+              }
+            }, 500); // Aumentar delay para 500ms
           } catch (error) {
             console.error('❌ [Socket] Erro no handler de reconnect:', error);
           }
@@ -2129,9 +2052,26 @@ const ListenerPlayer = () => {
             
             if (needsNewConnection) {
               // CRÍTICO: Verificar se já está criando conexão para evitar múltiplas tentativas
-              if (isWebRTCConnectingRef.current) {
-                console.log('ℹ️ [Listener] Já está criando conexão WebRTC, ignorando broadcaster duplicado');
-                return;
+              // Mas se a conexão anterior falhou ou foi limpa, permitir nova tentativa
+              if (isWebRTCConnectingRef.current && peerConnectionRef.current) {
+                const pc = peerConnectionRef.current;
+                const isConnectionBad = pc.connectionState === 'disconnected' ||
+                                       pc.connectionState === 'failed' ||
+                                       pc.connectionState === 'closed' ||
+                                       pc.signalingState === 'closed';
+                
+                // Se a conexão está ruim, resetar flag para permitir nova tentativa
+                if (isConnectionBad) {
+                  console.log('⚠️ [Listener] Conexão em estado ruim, resetando flag para permitir nova tentativa');
+                  isWebRTCConnectingRef.current = false;
+                } else {
+                  console.log('ℹ️ [Listener] Já está criando conexão WebRTC, ignorando broadcaster duplicado');
+                  return;
+                }
+              } else if (isWebRTCConnectingRef.current && !peerConnectionRef.current) {
+                // Flag está setada mas não há conexão - resetar
+                console.log('⚠️ [Listener] Flag setada mas sem conexão, resetando...');
+                isWebRTCConnectingRef.current = false;
               }
               
               // CRÍTICO: Verificar se já tem PeerConnection em estado ruim (disconnected, failed, closed)
@@ -3001,12 +2941,6 @@ const ListenerPlayer = () => {
             🎵 Player
           </Tab>
           <Tab 
-            $active={activeTab === 'robot'} 
-            onClick={() => setActiveTab('robot')}
-          >
-            🤖 Robô
-          </Tab>
-          <Tab 
             $active={activeTab === 'chat'} 
             onClick={() => setActiveTab('chat')}
           >
@@ -3106,140 +3040,6 @@ const ListenerPlayer = () => {
                   <StatValue>{listenerCount}</StatValue>
                 </StatCard>
               </StatsContainer>
-            </PlayerContent>
-          </TabContent>
-        )}
-
-        {activeTab === 'robot' && (
-          <TabContent>
-            <PlayerContent>
-              {/* Display Tecnológico do Robô */}
-              <RobotDisplayContainer>
-                <RobotDisplayHeader>
-                  <RobotDisplayTitle>
-                    <span>🤖</span> ASSISTENTE AI
-                  </RobotDisplayTitle>
-                  <RobotStatusIndicator $active={robotEnabled}>
-                    <span>{robotEnabled ? '●' : '○'}</span>
-                    {robotEnabled ? 'ATIVO' : 'INATIVO'}
-                  </RobotStatusIndicator>
-                </RobotDisplayHeader>
-                
-                <RobotViewport>
-                  <CircuitPattern />
-                  
-                  {/* Balão de fala do robô */}
-                  {robotMessage && robotEnabled && (
-                    <RobotSpeechBubble>
-                      {robotMessage}
-                    </RobotSpeechBubble>
-                  )}
-                  
-                  {/* Robô Animado */}
-                  <RobotContainer style={{ opacity: robotEnabled ? 1 : 0.4 }}>
-                    <RobotAntenna $left />
-                    <RobotAntenna $left={false} />
-                    <RobotHead $talking={isRobotTalking && robotEnabled}>
-                      <RobotEye $left />
-                      <RobotEye $left={false} />
-                      <RobotSpeaker $talking={isRobotTalking && robotEnabled} />
-                    </RobotHead>
-                    <RobotBody />
-                    <RobotArm $front $left />
-                    <RobotArm $front $left={false} />
-                  </RobotContainer>
-                  
-                  {/* Overlay de dados */}
-                  <DataOverlay>
-                    <span>SYS: OK</span>
-                    <span>AUDIO: {isPlaying ? 'ON' : 'OFF'}</span>
-                    <span>VOL: {volume}%</span>
-                  </DataOverlay>
-                </RobotViewport>
-                
-                {/* Controles do Robô */}
-                <RobotControlsRow>
-                  <StandardButton 
-                    $active={robotEnabled}
-                    onClick={() => setRobotEnabled(!robotEnabled)}
-                  >
-                    {robotEnabled ? '● Ligado' : '○ Desligado'}
-                  </StandardButton>
-                  <StandardButton 
-                    onClick={() => makeRobotSpeak('Olá! Estou pronto para ajudar!')}
-                    disabled={!robotEnabled}
-                  >
-                    💬 Testar Voz
-                  </StandardButton>
-                </RobotControlsRow>
-                
-                {/* Último comando do DJ */}
-                {lastDJCommand && (
-                  <div style={{
-                    marginTop: '12px',
-                    padding: '10px 16px',
-                    background: 'linear-gradient(135deg, rgba(6, 182, 212, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%)',
-                    border: '1px solid rgba(6, 182, 212, 0.3)',
-                    borderRadius: '10px',
-                    textAlign: 'center'
-                  }}>
-                    <div style={{
-                      fontSize: '0.65rem',
-                      color: '#64748b',
-                      textTransform: 'uppercase',
-                      letterSpacing: '1px',
-                      marginBottom: '4px'
-                    }}>
-                      ÚLTIMO COMANDO DO DJ
-                    </div>
-                    <div style={{
-                      fontSize: '0.9rem',
-                      color: '#22d3ee',
-                      fontWeight: '600'
-                    }}>
-                      "{lastDJCommand}"
-                    </div>
-                  </div>
-                )}
-              </RobotDisplayContainer>
-              
-              {/* Lista de comandos disponíveis */}
-              <div style={{
-                marginTop: '16px',
-                padding: '12px',
-                background: 'rgba(15, 23, 42, 0.6)',
-                borderRadius: '12px',
-                border: '1px solid rgba(6, 182, 212, 0.2)'
-              }}>
-                <div style={{
-                  fontSize: '0.75rem',
-                  color: '#94a3b8',
-                  textTransform: 'uppercase',
-                  letterSpacing: '1px',
-                  marginBottom: '10px',
-                  fontWeight: '700'
-                }}>
-                  🎤 Comandos de Voz Reconhecidos
-                </div>
-                <div style={{
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: '6px'
-                }}>
-                  {['olá', 'aumentar volume', 'abaixar volume', 'pausar', 'tocar', 'dançar', 'aplaudir', 'curtir'].map(cmd => (
-                    <span key={cmd} style={{
-                      padding: '4px 8px',
-                      background: 'rgba(6, 182, 212, 0.15)',
-                      border: '1px solid rgba(6, 182, 212, 0.3)',
-                      borderRadius: '6px',
-                      fontSize: '0.7rem',
-                      color: '#22d3ee'
-                    }}>
-                      {cmd}
-                    </span>
-                  ))}
-                </div>
-              </div>
             </PlayerContent>
           </TabContent>
         )}

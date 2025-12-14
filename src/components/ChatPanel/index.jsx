@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import styled, { keyframes, css } from 'styled-components';
 import io from 'socket.io-client';
 import { pulse, slideIn } from '../../styles/animations';
@@ -725,7 +725,6 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
   const CLEANUP_INTERVAL = 5 * 60 * 1000; // Limpar a cada 5 minutos
   const [inputValue, setInputValue] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [searchResults, setSearchResults] = useState([]);
   const [showSearch, setShowSearch] = useState(false);
   const [songTitle, setSongTitle] = useState('');
   const [songArtist, setSongArtist] = useState('');
@@ -740,6 +739,8 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
   const pushToTalkAnalyserRef = useRef(null);
   const pushToTalkAnimationRef = useRef(null);
   const pushToTalkRecognitionRef = useRef(null);
+  const lastVuLevelRef = useRef(0);
+  const vuFrameCountRef = useRef(0);
   
   const chatAreaRef = useRef(null);
   const inputRef = useRef(null);
@@ -779,23 +780,54 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
         
         recognition.onresult = (event) => {
           const last = event.results.length - 1;
-          const command = event.results[last][0].transcript.toLowerCase().trim();
+          const transcript = event.results[last][0].transcript.trim();
           
-          if (event.results[last].isFinal && command) {
+          if (event.results[last].isFinal && transcript) {
+            // Manter o texto original (não converter para lowercase) para melhor reconhecimento
+            const command = transcript;
             console.log('🎤 Ouvinte comando de voz:', command);
             setLastVoiceCommand(command);
             
-            // Enviar como mensagem de chat
-            if (socketRef.current && isConnected) {
+            // Enviar como mensagem de chat (sem emoji no texto, apenas o comando puro)
+            if (socketRef.current) {
+              // Verificar se está conectado diretamente do socket
+              const connected = socketRef.current.connected;
+              
+              if (!connected) {
+                console.warn('⚠️ Socket não conectado, tentando enviar mesmo assim...');
+              }
+              
+              // Usar o nome do usuário correto (chatUserName ou userName padrão)
+              const displayName = (chatUserName && chatUserName.trim()) || userName || 'Ouvinte';
+              
+              // Gerar ID único com timestamp + número aleatório
+              const messageId = Date.now() + Math.random();
+              
               const message = {
-                id: Date.now(),
-                user: chatUserName.trim() || userName,
+                id: messageId,
+                user: displayName,
                 time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
                 timestamp: new Date().toISOString(),
-                text: `🎤 ${command}`,
+                text: command, // Enviar apenas o texto, sem emoji
                 self: false,
               };
-              socketRef.current.emit('chat:message', message);
+              
+              try {
+                console.log('📤 [ChatPanel Ouvinte] Enviando mensagem de voz:', {
+                  id: messageId,
+                  user: displayName,
+                  text: command,
+                  socketConnected: socketRef.current?.connected,
+                  socketId: socketRef.current?.id
+                });
+                
+                socketRef.current.emit('chat:message', message);
+                console.log('✅ [ChatPanel Ouvinte] Mensagem de voz emitida com sucesso');
+              } catch (error) {
+                console.error('❌ [ChatPanel Ouvinte] Erro ao enviar mensagem:', error);
+              }
+            } else {
+              console.warn('⚠️ Socket não disponível para enviar mensagem');
             }
           }
         };
@@ -804,16 +836,42 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
         pushToTalkRecognitionRef.current = recognition;
       }
       
-      // VU Meter
+      // VU Meter - usar ref para evitar re-renders desnecessários
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      lastVuLevelRef.current = 0;
+      vuFrameCountRef.current = 0;
+      
       const updateVU = () => {
-        if (!pushToTalkStreamRef.current) return;
-        analyser.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-        const average = sum / dataArray.length;
-        setPushToTalkVuLevel(Math.min(100, (average / 255) * 100 * 2));
-        pushToTalkAnimationRef.current = requestAnimationFrame(updateVU);
+        if (!pushToTalkStreamRef.current || !pushToTalkAnalyserRef.current) {
+          if (pushToTalkAnimationRef.current) {
+            cancelAnimationFrame(pushToTalkAnimationRef.current);
+            pushToTalkAnimationRef.current = null;
+          }
+          return;
+        }
+        
+        try {
+          pushToTalkAnalyserRef.current.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+          const average = sum / dataArray.length;
+          const newLevel = Math.min(100, (average / 255) * 100 * 2);
+          
+          // Atualizar apenas a cada 3 frames (throttle) e se a diferença for significativa
+          vuFrameCountRef.current++;
+          if (vuFrameCountRef.current % 3 === 0 && Math.abs(newLevel - lastVuLevelRef.current) > 2) {
+            lastVuLevelRef.current = newLevel;
+            setPushToTalkVuLevel(newLevel);
+          }
+          
+          pushToTalkAnimationRef.current = requestAnimationFrame(updateVU);
+        } catch (error) {
+          // Se houver erro, parar a animação
+          if (pushToTalkAnimationRef.current) {
+            cancelAnimationFrame(pushToTalkAnimationRef.current);
+            pushToTalkAnimationRef.current = null;
+          }
+        }
       };
       updateVU();
       
@@ -821,7 +879,7 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
     } catch (err) {
       console.error('❌ Erro Push-to-Talk:', err);
     }
-  }, [isPushToTalkActive, isDJ, chatUserName, userName, isConnected]);
+  }, [isPushToTalkActive, isDJ, chatUserName, userName]); // Removido isConnected das dependências
   
   const stopPushToTalk = useCallback(() => {
     if (!isPushToTalkActive) return;
@@ -847,6 +905,23 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
     
     setPushToTalkVuLevel(0);
     setIsPushToTalkActive(false);
+  }, [isPushToTalkActive]);
+
+  // Limpar animação quando push-to-talk for desativado
+  useEffect(() => {
+    if (!isPushToTalkActive && pushToTalkAnimationRef.current) {
+      cancelAnimationFrame(pushToTalkAnimationRef.current);
+      pushToTalkAnimationRef.current = null;
+      setPushToTalkVuLevel(0);
+    }
+    
+    return () => {
+      // Cleanup ao desmontar
+      if (pushToTalkAnimationRef.current) {
+        cancelAnimationFrame(pushToTalkAnimationRef.current);
+        pushToTalkAnimationRef.current = null;
+      }
+    };
   }, [isPushToTalkActive]);
 
   // Inicializar socket
@@ -962,11 +1037,37 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
   // Atualizar socket ref quando prop mudar
   useEffect(() => {
     if (socket) {
+      console.log('🔄 [ChatPanel] Socket prop atualizado:', {
+        socketId: socket.id,
+        connected: socket.connected,
+        isDJ: isDJ
+      });
       socketRef.current = socket;
-      setIsConnected(socket.connected);
       
-      const handleConnect = () => setIsConnected(true);
-      const handleDisconnect = () => setIsConnected(false);
+      // Usar uma função para atualizar o estado de forma segura
+      const updateConnectionState = (connected) => {
+        setIsConnected(prev => {
+          // Só atualizar se o estado realmente mudou
+          if (prev !== connected) {
+            console.log(`📡 [ChatPanel] Estado de conexão mudou: ${prev} -> ${connected}`);
+            return connected;
+          }
+          return prev;
+        });
+      };
+      
+      updateConnectionState(socket.connected);
+      
+      // Adicionar listeners para mudanças de conexão
+      const handleConnect = () => {
+        console.log('✅ [ChatPanel] Socket conectado via prop');
+        updateConnectionState(true);
+      };
+      
+      const handleDisconnect = () => {
+        console.log('❌ [ChatPanel] Socket desconectado via prop');
+        updateConnectionState(false);
+      };
       
       socket.on('connect', handleConnect);
       socket.on('disconnect', handleDisconnect);
@@ -985,23 +1086,73 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
     console.log('ChatPanel: Configurando listeners. isDJ:', isDJ);
 
     const handleMessage = (message) => {
-      console.log('ChatPanel: Mensagem recebida:', message);
+      console.log('📥 [ChatPanel] ========== MENSAGEM RECEBIDA ==========');
+      console.log('📥 [ChatPanel] Dados completos:', {
+        id: message.id,
+        user: message.user,
+        text: message.text,
+        timestamp: message.timestamp,
+        self: message.self,
+        isDJ: isDJ,
+        socketId: socketRef.current?.id,
+        socketConnected: socketRef.current?.connected
+      });
+      
+      if (!message || !message.text) {
+        console.warn('⚠️ [ChatPanel] Mensagem inválida recebida:', message);
+        return;
+      }
+      
+      // CRÍTICO: Sempre adicionar mensagens de ouvintes, independente de self
+      // O campo self só indica se foi enviada pelo próprio usuário, não deve filtrar
       setMessages(prev => {
-        const exists = prev.find(m => m.id === message.id);
-        if (exists) return prev;
+        // Verificar se já existe uma mensagem com o mesmo ID
+        const exists = prev.find(m => {
+          // Comparar por ID exato ou por texto + timestamp (para evitar duplicatas)
+          return m.id === message.id || 
+                 (m.text === message.text && 
+                  m.user === message.user && 
+                  Math.abs(new Date(m.timestamp).getTime() - new Date(message.timestamp).getTime()) < 1000);
+        });
+        
+        if (exists) {
+          console.log('ℹ️ [ChatPanel] Mensagem duplicada ignorada:', message.id);
+          return prev;
+        }
+        
+        console.log('✅ [ChatPanel] ========== ADICIONANDO MENSAGEM ==========');
+        console.log('✅ [ChatPanel] Nova mensagem adicionada. Total anterior:', prev.length);
+        console.log('✅ [ChatPanel] Total após adicionar:', prev.length + 1);
+        console.log('✅ [ChatPanel] Mensagem:', message.text);
         return [...prev, message];
       });
     };
 
     const handleRequest = (request) => {
-      console.log('ChatPanel: Pedido recebido!', request, 'isDJ:', isDJ);
+      console.log('🎵 [ChatPanel] ========== PEDIDO DE MÚSICA RECEBIDO ==========');
+      console.log('🎵 [ChatPanel] Dados do pedido:', {
+        id: request.id,
+        song: request.song,
+        artist: request.artist,
+        user: request.user,
+        isDJ: isDJ,
+        socketId: socketRef.current?.id,
+        socketConnected: socketRef.current?.connected
+      });
+      
+      if (!request || !request.song) {
+        console.warn('⚠️ [ChatPanel] Pedido inválido recebido:', request);
+        return;
+      }
+      
       setRequests(prev => {
         const exists = prev.find(r => r.id === request.id);
         if (exists) {
-          console.log('Pedido já existe, ignorando duplicata');
+          console.log('ℹ️ [ChatPanel] Pedido já existe, ignorando duplicata:', request.id);
           return prev;
         }
-        console.log('Adicionando novo pedido. Total:', prev.length + 1);
+        console.log('✅ [ChatPanel] Adicionando novo pedido. Total anterior:', prev.length);
+        console.log('✅ [ChatPanel] Total após adicionar:', prev.length + 1);
         return [...prev, request];
       });
     };
@@ -1022,8 +1173,21 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
     };
 
     const handleHistory = (history) => {
-      console.log('ChatPanel: Histórico recebido:', history.length, 'mensagens');
-      setMessages(history);
+      console.log('📥 [ChatPanel] Histórico recebido:', history.length, 'mensagens');
+      // Só atualizar se o histórico não estiver vazio ou se não foi limpo recentemente
+      if (history && history.length > 0) {
+        setMessages(history);
+      } else {
+        // Se o histórico está vazio, manter as mensagens atuais (pode ter sido limpo)
+        console.log('ℹ️ [ChatPanel] Histórico vazio recebido, mantendo estado atual');
+      }
+    };
+
+    const handleChatCleared = (data) => {
+      console.log('🧹 [ChatPanel] Chat foi limpo no servidor:', data);
+      // Limpar mensagens localmente quando o servidor notificar
+      setMessages([]);
+      console.log('✅ [ChatPanel] Mensagens limpas após notificação do servidor');
     };
 
     const handleRequests = (requestsList) => {
@@ -1055,6 +1219,7 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
     socketRef.current.on('chat:history', handleHistory);
     socketRef.current.on('chat:requests', handleRequests);
     socketRef.current.on('chat:request:sent', handleRequestSent);
+    socketRef.current.on('chat:cleared', handleChatCleared);
     socketRef.current.on('server:restarted', handleServerRestarted);
 
     // Carregar histórico
@@ -1071,10 +1236,11 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
         socketRef.current.off('chat:history', handleHistory);
         socketRef.current.off('chat:requests', handleRequests);
         socketRef.current.off('chat:request:sent', handleRequestSent);
+        socketRef.current.off('chat:cleared', handleChatCleared);
         socketRef.current.off('server:restarted', handleServerRestarted);
       }
     };
-  }, [isDJ, isConnected]);
+  }, [isDJ]); // Removido isConnected das dependências para evitar loop infinito
 
   // Auto-scroll
   useEffect(() => {
@@ -1200,21 +1366,29 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
     return () => clearInterval(interval);
   }, []);
 
-  // Buscar músicas
+  // Memoizar tracks para evitar recálculos desnecessários
+  const tracksRef = useRef(tracks);
   useEffect(() => {
-    if (searchTerm.trim().length > 2 && tracks.length > 0) {
-      const filtered = tracks.filter(track => {
-        const search = searchTerm.toLowerCase();
-        const title = (track.title || '').toLowerCase();
-        const artist = (track.artist || '').toLowerCase();
-        const filename = (track.filename || '').toLowerCase();
-        return title.includes(search) || artist.includes(search) || filename.includes(search);
-      }).slice(0, 5);
-      setSearchResults(filtered);
-    } else {
-      setSearchResults([]);
+    tracksRef.current = tracks;
+  }, [tracks]);
+  
+  // Buscar músicas - usar useMemo para evitar recálculos desnecessários
+  const searchResults = useMemo(() => {
+    const currentTracks = tracksRef.current;
+    if (!searchTerm || searchTerm.trim().length <= 2 || !currentTracks || currentTracks.length === 0) {
+      return [];
     }
-  }, [searchTerm, tracks]);
+    
+    const search = searchTerm.toLowerCase().trim();
+    const filtered = currentTracks.filter(track => {
+      const title = (track.title || '').toLowerCase();
+      const artist = (track.artist || '').toLowerCase();
+      const filename = (track.filename || '').toLowerCase();
+      return title.includes(search) || artist.includes(search) || filename.includes(search);
+    }).slice(0, 5);
+    
+    return filtered;
+  }, [searchTerm]); // Remover tracks das dependências para evitar loop infinito
 
   const formatTime = () => {
     const now = new Date();
@@ -1236,8 +1410,11 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
     // Usar o nome de usuário do chat se fornecido, senão usar o padrão
     const finalUserName = chatUserName.trim() || (isDJ ? 'DJ' : userName);
 
+    // Gerar ID único com timestamp + número aleatório para evitar conflitos
+    const messageId = Date.now() + Math.random();
+
     const message = {
-      id: Date.now(),
+      id: messageId,
       user: finalUserName,
       time: formatTime(),
       timestamp: new Date().toISOString(), // Adicionar timestamp ISO para limpeza automática
@@ -1245,8 +1422,31 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
       self: isDJ,
     };
 
-    console.log('ChatPanel: Enviando mensagem:', message);
-    socketRef.current.emit('chat:message', message);
+    console.log('📤 [ChatPanel] ========== ENVIANDO MENSAGEM ==========');
+    console.log('📤 [ChatPanel] Dados da mensagem:', {
+      id: messageId,
+      user: finalUserName,
+      text: inputValue.trim(),
+      self: isDJ,
+      socketConnected: socketRef.current?.connected,
+      socketId: socketRef.current?.id
+    });
+    
+    try {
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('chat:message', message);
+        console.log('✅ [ChatPanel] Mensagem emitida com sucesso via socket');
+      } else {
+        console.error('❌ [ChatPanel] Socket não conectado! Mensagem não enviada.');
+        alert('Erro: Não conectado ao servidor. A mensagem não foi enviada.');
+        return;
+      }
+    } catch (error) {
+      console.error('❌ [ChatPanel] Erro ao enviar mensagem:', error);
+      alert('Erro ao enviar mensagem. Tente novamente.');
+      return;
+    }
+    
     setInputValue('');
     inputRef.current?.focus();
   }, [inputValue, isDJ, userName, chatUserName, isConnected]);
@@ -1273,7 +1473,6 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
     console.log('ChatPanel: Enviando pedido da biblioteca:', request);
     socketRef.current.emit('chat:request', request);
     setSearchTerm('');
-    setSearchResults([]);
     setShowSearch(false);
   }, [isDJ, userName, requestUserName, isConnected]);
 
@@ -1343,8 +1542,21 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
 
   const handleClearChat = useCallback(() => {
     if (window.confirm('Tem certeza que deseja limpar todas as mensagens do chat?')) {
+      // Limpar localmente primeiro
       setMessages([]);
-      console.log('ChatPanel: Chat limpo pelo usuário');
+      console.log('🧹 [ChatPanel] Limpando chat localmente...');
+      
+      // Emitir evento para limpar no servidor
+      if (socketRef.current && socketRef.current.connected) {
+        try {
+          socketRef.current.emit('chat:clear');
+          console.log('✅ [ChatPanel] Evento de limpeza enviado para o servidor');
+        } catch (error) {
+          console.error('❌ [ChatPanel] Erro ao enviar evento de limpeza:', error);
+        }
+      } else {
+        console.warn('⚠️ [ChatPanel] Socket não conectado, apenas limpando localmente');
+      }
     }
   }, []);
 

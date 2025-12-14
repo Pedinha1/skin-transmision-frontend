@@ -45,6 +45,11 @@ const scanLine = keyframes`
   100% { transform: translateX(100%); opacity: 0; }
 `;
 
+const scanLineVertical = keyframes`
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+`;
+
 const robotBounce = keyframes`
   0%, 100% { transform: translateY(0px) scaleY(1); }
   50% { transform: translateY(-8px) scaleY(0.95); }
@@ -66,9 +71,10 @@ const eyeBlink = keyframes`
   95% { transform: scaleY(0.1); }
 `;
 
-const scanLineVertical = keyframes`
-  0% { transform: translateY(-100%); }
-  100% { transform: translateY(100vh); }
+
+const dataStream = keyframes`
+  0% { background-position: 0% 0%; }
+  100% { background-position: 0% 100%; }
 `;
 
 // Animações para os botões de jingle
@@ -211,22 +217,23 @@ const PageContainer = styled.div`
   }
 `;
 
-// Header Profissional para Web Radio
 // ============================================
-// DISPLAY TECNOLÓGICO DO SEGUNDO ROBÔ
+// DISPLAY TECNOLÓGICO DO ROBÔ DA TELA DE COMPARTILHAMENTO
 // ============================================
 const RobotDisplayContainer2 = styled.div`
   width: 100%;
   background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.95) 100%);
   backdrop-filter: blur(15px);
   border: 2px solid rgba(6, 182, 212, 0.3);
-  border-radius: 16px;
-  padding: 1rem;
+  border-radius: 20px;
+  padding: 1.5rem;
+  margin-top: auto;
+  margin-bottom: 0;
   position: relative;
   overflow: hidden;
   box-shadow: 
-    0 15px 30px rgba(0, 0, 0, 0.4),
-    0 0 25px rgba(6, 182, 212, 0.2),
+    0 20px 40px rgba(0, 0, 0, 0.4),
+    0 0 30px rgba(6, 182, 212, 0.2),
     inset 0 1px 0 rgba(255, 255, 255, 0.1);
   ${css`animation: ${hologramFlicker} 4s ease-in-out infinite;`}
 
@@ -272,8 +279,8 @@ const RobotDisplayHeader2 = styled.div`
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 0.75rem;
-  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
   border-bottom: 1px solid rgba(6, 182, 212, 0.2);
   position: relative;
   z-index: 10;
@@ -282,15 +289,15 @@ const RobotDisplayHeader2 = styled.div`
 const RobotDisplayTitle2 = styled.div`
   color: #f1f5f9;
   font-weight: 700;
-  font-size: 0.75rem;
+  font-size: 0.85rem;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   letter-spacing: 1px;
   text-transform: uppercase;
   
   span {
-    font-size: 1rem;
+    font-size: 1.1rem;
     background: linear-gradient(135deg, #06b6d4 0%, #22d3ee 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -301,14 +308,14 @@ const RobotDisplayTitle2 = styled.div`
 const RobotStatusIndicator2 = styled.div`
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
+  gap: 6px;
+  padding: 4px 10px;
   background: ${props => props.$active 
     ? 'linear-gradient(135deg, rgba(6, 182, 212, 0.2) 0%, rgba(34, 211, 238, 0.15) 100%)'
     : 'rgba(100, 116, 139, 0.2)'};
   border: 1px solid ${props => props.$active ? 'rgba(6, 182, 212, 0.5)' : 'rgba(100, 116, 139, 0.3)'};
-  border-radius: 15px;
-  font-size: 0.55rem;
+  border-radius: 20px;
+  font-size: 0.65rem;
   font-weight: 700;
   color: ${props => props.$active ? '#22d3ee' : '#94a3b8'};
   text-transform: uppercase;
@@ -318,10 +325,10 @@ const RobotStatusIndicator2 = styled.div`
 const RobotViewport2 = styled.div`
   position: relative;
   width: 100%;
-  aspect-ratio: 16/10;
+  aspect-ratio: 4/3;
   background: linear-gradient(135deg, rgba(6, 182, 212, 0.05) 0%, rgba(15, 23, 42, 0.8) 50%, rgba(139, 92, 246, 0.05) 100%);
   border: 1px solid rgba(6, 182, 212, 0.2);
-  border-radius: 12px;
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -342,7 +349,19 @@ const RobotViewport2 = styled.div`
   }
 `;
 
-const CircuitPattern2 = styled.div`
+const ScanLine2 = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.8), transparent);
+  ${css`animation: ${scanLineVertical} 2s linear infinite;`}
+  z-index: 5;
+  pointer-events: none;
+`;
+
+const CircuitGrid2 = styled.div`
   position: absolute;
   top: 0;
   left: 0;
@@ -351,24 +370,75 @@ const CircuitPattern2 = styled.div`
   background-image: 
     linear-gradient(90deg, rgba(6, 182, 212, 0.1) 1px, transparent 1px),
     linear-gradient(rgba(6, 182, 212, 0.1) 1px, transparent 1px);
-  background-size: 15px 15px;
+  background-size: 20px 20px;
   ${css`animation: ${circuitPulse} 2s ease-in-out infinite;`}
   pointer-events: none;
+  z-index: 3;
 `;
 
-const DataOverlay2 = styled.div`
+const DataFlow2 = styled.div`
   position: absolute;
-  bottom: 8px;
-  left: 8px;
-  right: 8px;
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.5rem;
-  color: rgba(6, 182, 212, 0.7);
-  font-family: 'Courier New', monospace;
-  font-weight: 600;
-  letter-spacing: 1px;
-  z-index: 30;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 10px,
+      rgba(6, 182, 212, 0.1) 10px,
+      rgba(6, 182, 212, 0.1) 20px
+    );
+  ${css`animation: ${dataStream} 3s linear infinite;`}
+  pointer-events: none;
+  z-index: 4;
+`;
+
+const GlitchEffect2 = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: 
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 2px,
+      rgba(6, 182, 212, 0.05) 2px,
+      rgba(6, 182, 212, 0.05) 4px
+    );
+  ${css`animation: ${hologramFlicker} 0.1s ease-in-out infinite;`}
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0;
+  
+  ${props => props.$active && css`
+    opacity: 0.3;
+  `}
+`;
+
+const FlickerEffect2 = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(6, 182, 212, 0.05);
+  ${css`animation: ${hologramFlicker} 4s ease-in-out infinite;`}
+  pointer-events: none;
+  z-index: 7;
+`;
+
+const RobotOverlay2 = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 8;
+  pointer-events: none;
 `;
 
 // Componentes do Segundo Robô (mantidos para compatibilidade)
@@ -462,8 +532,8 @@ const RobotSpeechBubble = styled.div`
 
 const RobotContainer2 = styled.div`
   position: relative;
-  width: 120px;
-  height: 140px;
+  width: 150px;
+  height: 180px;
   ${css`animation: ${robotFloat} 3s ease-in-out infinite;`}
   cursor: pointer;
   transition: transform 0.2s;
@@ -476,57 +546,57 @@ const RobotContainer2 = styled.div`
 
 const RobotAntenna2 = styled.div`
   position: absolute;
-  top: -24px;
-  left: ${props => props.$left ? '35px' : '70px'};
-  width: 3px;
-  height: 24px;
+  top: -30px;
+  left: ${props => props.$left ? '45px' : '85px'};
+  width: 4px;
+  height: 30px;
   background: linear-gradient(180deg, #06b6d4 0%, #0f172a 100%);
   border-radius: 2px;
   
   &::after {
     content: '';
     position: absolute;
-    top: -6px;
+    top: -8px;
     left: 50%;
     transform: translateX(-50%);
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
     background: ${props => props.$left 
       ? 'radial-gradient(circle, #06b6d4 0%, #0891b2 100%)'
       : 'radial-gradient(circle, #22d3ee 0%, #06b6d4 100%)'};
     border-radius: 50%;
-    box-shadow: 0 0 12px ${props => props.$left ? '#06b6d4' : '#22d3ee'};
+    box-shadow: 0 0 15px ${props => props.$left ? '#06b6d4' : '#22d3ee'};
     ${css`animation: ${pulse} 2s ease-in-out infinite;`}
   }
 `;
 
 const RobotHead2 = styled.div`
   position: absolute;
-  top: 8px;
+  top: 10px;
   left: 50%;
   transform: translateX(-50%);
-  width: 80px;
-  height: 60px;
+  width: 100px;
+  height: 75px;
   background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-  border: 2px solid #06b6d4;
-  border-radius: 16px;
+  border: 3px solid #06b6d4;
+  border-radius: 20px;
   box-shadow: 
-    0 0 15px rgba(6, 182, 212, 0.4),
-    inset 0 6px 15px rgba(6, 182, 212, 0.2),
-    inset -3px -3px 10px rgba(0, 0, 0, 0.3);
+    0 0 20px rgba(6, 182, 212, 0.4),
+    inset 0 8px 20px rgba(6, 182, 212, 0.2),
+    inset -4px -4px 12px rgba(0, 0, 0, 0.3);
   ${props => props.$talking ? css`animation: ${robotBounce} 0.5s ease-in-out infinite;` : css`animation: none;`}
   position: relative;
   z-index: 3;
   overflow: hidden;
-
+  
   &::before {
     content: '';
     position: absolute;
-    top: 4px;
+    top: 5px;
     left: 50%;
     transform: translateX(-50%);
     width: 80%;
-    height: 2px;
+    height: 3px;
     background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.5), transparent);
     border-radius: 2px;
   }
@@ -534,37 +604,37 @@ const RobotHead2 = styled.div`
 
 const RobotEye2 = styled.div`
   position: absolute;
-  top: 20px;
-  left: ${props => props.$left ? '16px' : '48px'};
-  width: 18px;
-  height: 18px;
+  top: 25px;
+  left: ${props => props.$left ? '20px' : '60px'};
+  width: 22px;
+  height: 22px;
   background: radial-gradient(circle, #22d3ee 0%, #06b6d4 50%, #0891b2 100%);
   border-radius: 50%;
   box-shadow: 
-    0 0 15px rgba(34, 211, 238, 0.8),
+    0 0 20px rgba(34, 211, 238, 0.8),
     inset 2px 2px 4px rgba(255, 255, 255, 0.3);
   ${css`animation: ${eyeBlink} 4s ease-in-out infinite;`}
 
   &::before {
     content: '';
     position: absolute;
-    top: 3px;
-    left: 3px;
-    width: 5px;
-    height: 5px;
+    top: 4px;
+    left: 4px;
+    width: 6px;
+    height: 6px;
     background: white;
     border-radius: 50%;
     opacity: 0.8;
   }
-
+  
   &::after {
     content: '';
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
     background: #0f172a;
     border-radius: 50%;
   }
@@ -576,13 +646,13 @@ const RobotSensor2 = styled.div`
 
 const RobotSpeaker2 = styled.div`
   position: absolute;
-  top: 44px;
+  top: 55px;
   left: 50%;
   transform: translateX(-50%);
-  width: 24px;
-  height: 6px;
+  width: 30px;
+  height: 8px;
   background: linear-gradient(90deg, 
-    #0f172a 0%, 
+    #0f172a 0%,
     #06b6d4 10%, 
     #0f172a 20%,
     #06b6d4 30%,
@@ -594,24 +664,24 @@ const RobotSpeaker2 = styled.div`
     #06b6d4 90%,
     #0f172a 100%
   );
-  border-radius: 3px;
-  box-shadow: 0 0 8px rgba(6, 182, 212, 0.5);
+  border-radius: 4px;
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.5);
   ${props => props.$talking ? css`animation: ${talk} 0.4s ease-in-out infinite;` : css`animation: none;`}
 `;
 
 const RobotBody2 = styled.div`
   position: absolute;
-  top: 72px;
+  top: 90px;
   left: 50%;
   transform: translateX(-50%);
-  width: 56px;
-  height: 48px;
+  width: 70px;
+  height: 60px;
   background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-  border: 2px solid #06b6d4;
-  border-radius: 10px;
+  border: 3px solid #06b6d4;
+  border-radius: 12px;
   box-shadow: 
-    0 0 12px rgba(6, 182, 212, 0.3),
-    inset 0 4px 8px rgba(6, 182, 212, 0.1);
+    0 0 15px rgba(6, 182, 212, 0.3),
+    inset 0 4px 10px rgba(6, 182, 212, 0.1);
   position: relative;
 
   &::before {
@@ -620,31 +690,31 @@ const RobotBody2 = styled.div`
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    font-size: 1.2rem;
+    font-size: 1.5rem;
     opacity: 0.7;
   }
 `;
 
 const RobotArm2 = styled.div`
   position: absolute;
-  top: ${props => props.$front ? '82px' : '86px'};
-  left: ${props => props.$left ? '12px' : '94px'};
-  width: 8px;
-  height: 28px;
+  top: ${props => props.$front ? '105px' : '110px'};
+  left: ${props => props.$left ? '15px' : '115px'};
+  width: 10px;
+  height: 35px;
   background: linear-gradient(180deg, #0f172a 0%, #06b6d4 50%, #0f172a 100%);
   border: 2px solid #06b6d4;
-  border-radius: 4px;
+  border-radius: 5px;
   transform: ${props => props.$left ? 'rotate(15deg)' : 'rotate(-15deg)'};
-  box-shadow: 0 0 8px rgba(6, 182, 212, 0.3);
+  box-shadow: 0 0 10px rgba(6, 182, 212, 0.3);
 
   &::after {
     content: '';
     position: absolute;
-    bottom: -6px;
+    bottom: -8px;
     left: 50%;
     transform: translateX(-50%);
-    width: 12px;
-    height: 12px;
+    width: 14px;
+    height: 14px;
     background: radial-gradient(circle, #06b6d4 0%, #0891b2 100%);
     border-radius: 50%;
     border: 2px solid #22d3ee;
@@ -3521,6 +3591,12 @@ const DJPanel = () => {
   const [activeTab, setActiveTab] = useState('HOME');
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   
+  // ============================================
+  // FUNÇÃO ESPECÍFICA DO ROBÔ DE COMPARTILHAMENTO DE TELA
+  // Este robô é APENAS VISUAL - não processa mensagens do chat
+  // Apenas exibe animações e efeitos visuais
+  // ============================================
+  
   // Estados do segundo robô (independente)
   const [mascotEnabled2, setMascotEnabled2] = useState(true);
   const [mascotMessage2, setMascotMessage2] = useState('');
@@ -4700,6 +4776,13 @@ const DJPanel = () => {
       
       console.log('🌐 Buscando música na internet:', { songTitle, artist });
       
+      // Notificar o robô que está buscando
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('robot:answer', { 
+          answer: `Buscando ${songTitle}${artist ? ` de ${artist}` : ''} na internet...` 
+        });
+      }
+      
       // Primeiro, buscar no YouTube
       let searchResponse;
       let searchResult;
@@ -4745,6 +4828,13 @@ const DJPanel = () => {
       }
       
       console.log('✅ Vídeo encontrado:', searchResult.video.title);
+      
+      // Notificar o robô que encontrou e está baixando
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('robot:answer', { 
+          answer: `Encontrei! Baixando ${songTitle}...` 
+        });
+      }
       
       // Baixar o áudio
       let downloadResponse;
@@ -4812,11 +4902,61 @@ const DJPanel = () => {
       }
       
       // Criar File object a partir do Blob
+      const fileName = `${songTitle}${artist ? ` - ${artist}` : ''}.mp3`;
       const audioFile = new File(
         [audioBlob],
-        `${songTitle}${artist ? ` - ${artist}` : ''}.mp3`,
+        fileName,
         { type: 'audio/mpeg' }
       );
+      
+      // Salvar arquivo na pasta Downloads do usuário
+      try {
+        // Tentar usar File System Access API (Chrome/Edge)
+        if ('showSaveFilePicker' in window) {
+          try {
+            const fileHandle = await window.showSaveFilePicker({
+              suggestedName: fileName,
+              types: [{
+                description: 'Arquivo de áudio MP3',
+                accept: { 'audio/mpeg': ['.mp3'] }
+              }],
+              startIn: 'downloads'
+            });
+            
+            const writable = await fileHandle.createWritable();
+            await writable.write(audioBlob);
+            await writable.close();
+            
+            console.log('✅ Arquivo salvo na pasta Downloads:', fileName);
+          } catch (saveError) {
+            // Se o usuário cancelar ou houver erro, fazer download tradicional
+            console.log('ℹ️ Salvando via download tradicional...');
+            const downloadUrl = URL.createObjectURL(audioBlob);
+            const link = document.createElement('a');
+            link.href = downloadUrl;
+            link.download = fileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(downloadUrl);
+            console.log('✅ Download iniciado:', fileName);
+          }
+        } else {
+          // Fallback: download tradicional (todos os navegadores)
+          const downloadUrl = URL.createObjectURL(audioBlob);
+          const link = document.createElement('a');
+          link.href = downloadUrl;
+          link.download = fileName;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(downloadUrl);
+          console.log('✅ Download iniciado:', fileName);
+        }
+      } catch (saveError) {
+        console.warn('⚠️ Erro ao salvar arquivo na pasta Downloads:', saveError);
+        // Continuar mesmo se não conseguir salvar, pois o arquivo já está na biblioteca
+      }
       
       // Criar blob URL para o arquivo
       const blobUrl = URL.createObjectURL(audioFile);
@@ -4842,6 +4982,13 @@ const DJPanel = () => {
       setTracks(prev => [...prev, newTrack]);
       
       console.log('✅ Música adicionada à biblioteca:', newTrack.name);
+      
+      // Notificar o robô que concluiu o download
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('robot:answer', { 
+          answer: `Pronto! ${songTitle} foi baixada e adicionada à fila.` 
+        });
+      }
       
       // Adicionar à fila automaticamente
       setPlayQueue(prev => {
@@ -9079,10 +9226,10 @@ const DJPanel = () => {
                  // Callback quando o mascote começar a falar
                  console.log('🤖 Mascote começou a falar - volume da música reduzido');
                }}
-onMascotStopSpeaking={() => {
-                // Callback quando o mascote parar de falar
-                console.log('🤖 Mascote parou de falar - volume da música restaurado');
-              }}
+               onMascotStopSpeaking={() => {
+                 // Callback quando o mascote parar de falar
+                 console.log('🤖 Mascote parou de falar - volume da música restaurado');
+               }}
               isBroadcasting={isBroadcasting}
               onDJCommand={async (command) => {
                 console.log('🎙️ Executando comando DJ:', command);
@@ -9153,7 +9300,7 @@ onMascotStopSpeaking={() => {
                     console.log('Comando não reconhecido:', command);
                 }
               }}
-            />
+             />
            </div>
            
            {/* Jingles abaixo do Digital Mixer - 8 por linha */}
@@ -9522,13 +9669,20 @@ onMascotStopSpeaking={() => {
               
               {/* Código antigo dos jingles removido - substituído por VignettePanel acima */}
               
-              {/* Segundo Robô */}
-              <RobotMascotContainer style={{
-                opacity: mascotEnabled2 ? 1 : 0.3,
+              {/* Segundo Robô - Design Tecnológico */}
+              <RobotDisplayContainer2 style={{
+                opacity: mascotEnabled2 ? 1 : 0.5,
                 marginTop: 'auto',
                 marginBottom: '0'
               }}>
-                {/* Botão de Ligar/Desligar Robô */}
+                <RobotDisplayHeader2>
+                  <RobotDisplayTitle2>
+                    <span>🤖</span> AI ASSISTENTE
+                  </RobotDisplayTitle2>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <RobotStatusIndicator2 $active={mascotEnabled2}>
+                      {mascotEnabled2 ? '● ATIVO' : '○ INATIVO'}
+                    </RobotStatusIndicator2>
                 <RobotToggleButton
                   $active={mascotEnabled2}
                   onClick={() => {
@@ -9544,14 +9698,25 @@ onMascotStopSpeaking={() => {
                 >
                   {mascotEnabled2 ? 'L' : 'D'}
                 </RobotToggleButton>
+                  </div>
+                </RobotDisplayHeader2>
+                
+                <RobotViewport2>
+                  <RobotOverlay2>
+                    <ScanLine2 />
+                    <CircuitGrid2 />
+                    <DataFlow2 />
+                    <GlitchEffect2 $active={isMascotTalking2 && mascotEnabled2} />
+                    <FlickerEffect2 />
+                  </RobotOverlay2>
                 
                 {mascotMessage2 && mascotEnabled2 && (
                   <RobotSpeechBubble>
                     {mascotMessage2}
                   </RobotSpeechBubble>
                 )}
-                <RobotContainer2 style={{opacity: mascotEnabled2 ? 1 : 0.5}}>
-                  <RobotAccessory2>🤖</RobotAccessory2>
+                  
+                  <RobotContainer2 style={{opacity: mascotEnabled2 ? 1 : 0.5, zIndex: 20}}>
                   <RobotAntenna2 $left />
                   <RobotAntenna2 $left={false} />
                   <RobotHead2 $talking={isMascotTalking2 && mascotEnabled2}>
@@ -9564,6 +9729,7 @@ onMascotStopSpeaking={() => {
                   <RobotArm2 $front $left />
                   <RobotArm2 $front $left={false} />
                 </RobotContainer2>
+                  
                 {!mascotEnabled2 && (
                   <div style={{
                     position: 'absolute',
@@ -9584,7 +9750,8 @@ onMascotStopSpeaking={() => {
                     DESLIGADO
                   </div>
                 )}
-              </RobotMascotContainer>
+                </RobotViewport2>
+              </RobotDisplayContainer2>
             </div>
             
             {/* Coluna Direita: Tela de Compartilhamento */}

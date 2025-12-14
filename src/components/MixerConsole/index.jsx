@@ -3076,25 +3076,81 @@ const MixerConsole = ({
     return { song: songTitle, artist: songArtist || null };
   }, []);
 
-  // Função para detectar se uma mensagem é uma pergunta
+  // Função para detectar se uma mensagem é uma pergunta (melhorada para voz e texto)
   const isQuestion = (text) => {
-    if (!text || typeof text !== 'string') return false;
+    if (!text || typeof text !== 'string') {
+      console.log('❌ [isQuestion] Texto inválido:', text);
+      return false;
+    }
+    
     const trimmedText = text.trim().toLowerCase();
     
-    // Verificar se termina com interrogação
-    if (trimmedText.endsWith('?')) return true;
+    if (!trimmedText) {
+      console.log('❌ [isQuestion] Texto vazio após trim');
+      return false;
+    }
     
-    // Verificar palavras-chave de perguntas
+    console.log('🔍 [isQuestion] Verificando se é pergunta:', trimmedText);
+    
+    // Verificar se termina com interrogação
+    if (trimmedText.endsWith('?') || trimmedText.endsWith('?')) {
+      console.log('✅ [isQuestion] Detectado: termina com ?');
+      return true;
+    }
+    
+    // Verificar palavras-chave de perguntas (expandido para melhor detecção)
     const questionKeywords = [
       'quanto', 'qual', 'quais', 'quando', 'onde', 'como', 'por que', 'porque',
       'quem', 'o que', 'que', 'qual é', 'quantos', 'quantas', 'quanto é',
       'qual a', 'qual o', 'como é', 'como funciona', 'pode me ajudar', 'você pode',
       'me ajuda', 'me diga', 'diga', 'fale', 'explique', 'calcula', 'calcule',
       'quanto vale', 'qual o resultado', 'qual resultado', 'quanto dá',
-      'que horas', 'que hora', 'horário', 'que dia', 'qual a data', 'data hoje'
+      'que horas', 'que hora', 'horário', 'que dia', 'qual a data', 'data hoje',
+      'qual o nome', 'qual nome', 'quem é', 'quem foi', 'o que significa',
+      'o que é', 'definição', 'significado', 'capital', 'presidente', 'país',
+      'cidade', 'estado', 'rio', 'montanha', 'inventor', 'descobriu', 'fundou',
+      'criou', 'nasceu', 'morreu', 'ano', 'altura', 'peso', 'distância',
+      'população', 'moeda', 'língua', 'idioma', 'conhece', 'sabe', 'me fale',
+      'me conta', 'conta', 'fala sobre', 'explique sobre', 'me explique',
+      'qual a capital', 'qual capital', 'quem é o', 'quem foi o', 'quem foi a',
+      'onde fica', 'onde está', 'onde fica o', 'onde está o', 'onde fica a',
+      'quando foi', 'quando aconteceu', 'quando nasceu', 'quando morreu',
+      'como funciona', 'como fazer', 'como é feito', 'como se faz'
     ];
     
-    return questionKeywords.some(keyword => trimmedText.includes(keyword));
+    // Verificar se começa com palavra-chave de pergunta (mais comum em perguntas faladas)
+    const startsWithQuestion = questionKeywords.some(keyword => {
+      const starts = trimmedText.startsWith(keyword) || trimmedText.startsWith(keyword + ' ');
+      if (starts) {
+        console.log(`✅ [isQuestion] Detectado: começa com "${keyword}"`);
+      }
+      return starts;
+    });
+    
+    // Verificar se contém palavra-chave de pergunta
+    const containsQuestion = questionKeywords.some(keyword => {
+      const contains = trimmedText.includes(keyword);
+      if (contains) {
+        console.log(`✅ [isQuestion] Detectado: contém "${keyword}"`);
+      }
+      return contains;
+    });
+    
+    // Se começa com palavra-chave, é quase certamente uma pergunta
+    if (startsWithQuestion) {
+      console.log('✅ [isQuestion] É pergunta: começa com palavra-chave');
+      return true;
+    }
+    
+    // Se contém palavra-chave e tem mais de 2 palavras, provavelmente é uma pergunta
+    const wordCount = trimmedText.split(/\s+/).length;
+    if (containsQuestion && wordCount >= 2) {
+      console.log(`✅ [isQuestion] É pergunta: contém palavra-chave e tem ${wordCount} palavras`);
+      return true;
+    }
+    
+    console.log('❌ [isQuestion] Não é pergunta');
+    return false;
   };
 
   // Função para calcular resposta de expressões matemáticas
@@ -3262,9 +3318,16 @@ const MixerConsole = ({
       return { type: 'track', answer: 'No momento não há música tocando.' };
     }
     
-    // Se é uma pergunta que não sabemos responder localmente, retornar null
-    // para que o sistema busque na internet
-    if (lowerText.includes('?') || isQuestion(text)) {
+    // Se é uma pergunta que não sabemos responder localmente, buscar na internet
+    // Verificar se é uma pergunta usando a função isQuestion
+    if (isQuestion(text)) {
+      console.log('🔍 Pergunta detectada, buscando resposta online:', text);
+      return { type: 'search_online', answer: null };
+    }
+    
+    // Se termina com interrogação, também buscar online
+    if (lowerText.trim().endsWith('?')) {
+      console.log('🔍 Pergunta detectada (termina com ?), buscando resposta online:', text);
       return { type: 'search_online', answer: null };
     }
     
@@ -3273,16 +3336,82 @@ const MixerConsole = ({
 
   // Efeito para escutar mensagens do chat e fazer o mascote ler e responder perguntas
   useEffect(() => {
-    if (!mascotEnabled || !socket || !socket.connected) return;
+    if (!mascotEnabled || !socket) {
+      console.log('⚠️ [ChatHandler] Mascote desabilitado ou socket não disponível:', {
+        mascotEnabled,
+        hasSocket: !!socket
+      });
+      return;
+    }
+    
+    // Verificar conexão do socket
+    if (!socket.connected) {
+      console.warn('⚠️ [ChatHandler] Socket não conectado, mas continuando para tentar reconectar...');
+    }
+    
+    // Função auxiliar para enviar mensagem no chat (com retry)
+    const sendChatMessage = async (text, maxRetries = 3) => {
+      if (!text || !text.trim()) {
+        console.warn('⚠️ [sendChatMessage] Texto vazio, não enviando');
+        return false;
+      }
+      
+      const now = new Date();
+      const hours = String(now.getHours()).padStart(2, '0');
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      const seconds = String(now.getSeconds()).padStart(2, '0');
+      const timeStr = `${hours}:${minutes}:${seconds}`;
+      
+      const responseMessage = {
+        id: Date.now() + Math.random(),
+        user: '🤖 AI Assistente',
+        time: timeStr,
+        timestamp: now.toISOString(),
+        text: text.trim(),
+        self: false
+      };
+      
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        if (socket && socket.connected) {
+          try {
+            socket.emit('chat:message', responseMessage);
+            console.log(`✅ [sendChatMessage] Mensagem enviada no chat (tentativa ${attempt}):`, text);
+            return true;
+          } catch (error) {
+            console.error(`❌ [sendChatMessage] Erro ao enviar (tentativa ${attempt}):`, error);
+            if (attempt < maxRetries) {
+              await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+            }
+          }
+        } else {
+          console.warn(`⚠️ [sendChatMessage] Socket não conectado (tentativa ${attempt}/${maxRetries})`);
+          if (attempt < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+          }
+        }
+      }
+      
+      console.error('❌ [sendChatMessage] Falha ao enviar mensagem após todas as tentativas');
+      return false;
+    };
     
     // Função auxiliar para processar mensagem normalmente
     const processMessageNormal = async (message) => {
+        console.log('📨 [processMessageNormal] ========== INICIANDO PROCESSAMENTO ==========');
+        console.log('📨 [processMessageNormal] Mensagem recebida:', {
+          id: message.id,
+          user: message.user,
+          text: message.text,
+          timestamp: message.timestamp
+        });
+        
         // Processar mensagem com filtro de profanidade
         try {
           const result = await mascotService.processMessage(message);
           
           if (result.blocked) {
             // Mensagem bloqueada - mostrar mensagem educada
+            console.log('🚫 [processMessageNormal] Mensagem bloqueada por profanidade');
             makeMascotSpeak(result.politeMessage, true);
             if (result.mascot) {
               setMascotLevel(result.mascot.level);
@@ -3303,7 +3432,125 @@ const MixerConsole = ({
           
           const textToRead = message.text || '';
         
-        // Verificar se é um pedido de música antes de verificar perguntas
+        console.log('🤖 [processMessageNormal] Processando mensagem do robô:', {
+          user: message.user,
+          text: textToRead,
+          textLength: textToRead.length,
+          isQuestion: isQuestion(textToRead),
+          trimmed: textToRead.trim(),
+          isEmpty: !textToRead.trim()
+        });
+        
+        // CRÍTICO: Verificar se é uma pergunta PRIMEIRO, antes de qualquer outra coisa
+        const isQuestionResult = isQuestion(textToRead);
+        console.log('🔍 [processMessageNormal] Resultado de isQuestion:', isQuestionResult);
+        
+        if (textToRead.trim() && isQuestionResult) {
+          console.log('🤖 [PRIORIDADE] ========== PERGUNTA DETECTADA ==========');
+          console.log('🤖 [PRIORIDADE] Texto da pergunta:', textToRead);
+          console.log('🤖 [PRIORIDADE] Usuário que fez a pergunta:', message.user);
+          
+          let responseText = '';
+          
+          // Primeiro, tentar resposta local (matemática, hora, etc) - apenas para casos específicos
+          const answer = generateAnswer(textToRead);
+          console.log('🔍 [PRIORIDADE] Resultado do generateAnswer:', answer);
+          
+          // Se for matemática, usar resposta local
+          if (answer && answer.type === 'math') {
+            responseText = `A resposta de ${answer.expression} é ${answer.answer}.`;
+            console.log('🔢 [PRIORIDADE] Resposta matemática local:', responseText);
+          } else {
+            // Para TODAS as outras perguntas, SEMPRE buscar na internet
+            console.log('🔍 [PRIORIDADE] ========== INICIANDO BUSCA NA INTERNET ==========');
+            console.log('🔍 [PRIORIDADE] Pergunta para buscar:', textToRead);
+            console.log('🔍 [PRIORIDADE] generateAnswer retornou:', answer);
+            
+            // Mostrar que está buscando
+            makeMascotSpeak('Deixa eu pesquisar...', false);
+            
+            try {
+              console.log('🔍 [PRIORIDADE] Chamando aiSearchService.searchAnswer...');
+              const searchResult = await aiSearchService.searchAnswer(textToRead);
+              console.log('📊 [PRIORIDADE] Resultado completo da busca:', JSON.stringify(searchResult, null, 2));
+              
+              if (searchResult && searchResult.success && searchResult.answer) {
+                responseText = searchResult.answer;
+                console.log('✅ [PRIORIDADE] ========== RESPOSTA ENCONTRADA ==========');
+                console.log('✅ [PRIORIDADE] Resposta:', responseText);
+                console.log('✅ [PRIORIDADE] Source:', searchResult.source);
+              } else {
+                // Se a busca falhou, tentar usar resposta local se disponível
+                if (answer && answer.answer) {
+                  responseText = answer.answer;
+                  console.log('💬 [PRIORIDADE] Usando resposta local como fallback:', responseText);
+                } else {
+                  responseText = 'Desculpe, não consegui encontrar a resposta para essa pergunta.';
+                  console.log('⚠️ [PRIORIDADE] ========== BUSCA FALHOU ==========');
+                  console.log('⚠️ [PRIORIDADE] Source:', searchResult?.source || 'unknown');
+                  console.log('⚠️ [PRIORIDADE] Success:', searchResult?.success);
+                  console.log('⚠️ [PRIORIDADE] Answer:', searchResult?.answer);
+                }
+              }
+            } catch (searchError) {
+              console.error('❌ [PRIORIDADE] ========== ERRO NA BUSCA ==========');
+              console.error('❌ [PRIORIDADE] Erro completo:', searchError);
+              console.error('❌ [PRIORIDADE] Stack:', searchError?.stack);
+              
+              // Se a busca falhou, tentar usar resposta local se disponível
+              if (answer && answer.answer) {
+                responseText = answer.answer;
+                console.log('💬 [PRIORIDADE] Usando resposta local após erro:', responseText);
+              } else {
+                responseText = 'Ops, tive um problema ao buscar a resposta. Tente novamente!';
+              }
+            }
+            
+            console.log('🔍 [PRIORIDADE] ========== BUSCA CONCLUÍDA ==========');
+            console.log('🔍 [PRIORIDADE] Resposta final:', responseText);
+          }
+          
+          // CRÍTICO: Sempre enviar resposta no chat e fazer o robô falar
+          console.log('📝 [PRIORIDADE] Preparando para enviar resposta. responseText:', responseText);
+          console.log('📝 [PRIORIDADE] Socket disponível:', !!socket);
+          console.log('📝 [PRIORIDADE] Socket conectado:', socket?.connected);
+          
+          if (responseText && responseText.trim()) {
+            // Usar função auxiliar para enviar mensagem (com retry automático)
+            const sent = await sendChatMessage(responseText);
+            
+            if (sent) {
+              console.log('✅ [PRIORIDADE] Resposta enviada com sucesso no chat');
+            } else {
+              console.error('❌ [PRIORIDADE] Falha ao enviar resposta no chat após todas as tentativas');
+            }
+            
+            // Enviar resposta do robô para os ouvintes falarem também
+            if (socket && socket.connected) {
+              try {
+                socket.emit('robot:answer', {
+                  text: responseText.trim(),
+                  question: textToRead,
+                  timestamp: Date.now()
+                });
+                console.log('📡 [PRIORIDADE] Resposta do robô enviada para ouvintes:', responseText);
+              } catch (emitError) {
+                console.error('❌ [PRIORIDADE] Erro ao emitir robot:answer:', emitError);
+              }
+            }
+            
+            // Fazer o mascote falar a resposta em voz alta (sempre, mesmo se não enviar no chat)
+            console.log('🔊 [PRIORIDADE] Fazendo robô falar resposta:', responseText);
+            makeMascotSpeak(responseText.trim(), true);
+          } else {
+            console.warn('⚠️ [PRIORIDADE] Resposta vazia ou inválida. responseText:', responseText);
+          }
+          
+          // Não ler a mensagem original se já respondeu
+          return;
+        }
+        
+        // Verificar se é um pedido de música (após verificar perguntas)
         if (textToRead.trim() && onAddToQueue && tracks.length > 0) {
           const songRequest = detectSongRequest(textToRead);
           
@@ -3423,80 +3670,7 @@ const MixerConsole = ({
           }
         }
         
-        // Verificar se é uma pergunta e tentar responder
-        if (textToRead.trim() && isQuestion(textToRead)) {
-          const answer = generateAnswer(textToRead);
-          
-          if (answer) {
-            let responseText = '';
-            
-            if (answer.type === 'math') {
-              responseText = `A resposta de ${answer.expression} é ${answer.answer}.`;
-            } else if (answer.type === 'search_online') {
-              // Buscar resposta na internet usando AI
-              console.log('🔍 Buscando resposta na internet para:', textToRead);
-              
-              // Mostrar que está buscando
-              makeMascotSpeak('Deixa eu pesquisar...', false);
-              
-              try {
-                const searchResult = await aiSearchService.searchAnswer(textToRead);
-                
-                if (searchResult.success && searchResult.answer) {
-                  responseText = searchResult.answer;
-                  console.log('✅ Resposta encontrada online:', responseText);
-                } else {
-                  responseText = 'Desculpe, não consegui encontrar a resposta para essa pergunta.';
-                  console.log('⚠️ Não foi possível buscar resposta online');
-                }
-              } catch (searchError) {
-                console.error('❌ Erro ao buscar resposta:', searchError);
-                responseText = 'Ops, tive um problema ao buscar a resposta. Tente novamente!';
-              }
-            } else {
-              responseText = answer.answer;
-            }
-            
-            // Enviar resposta no chat
-            if (socket && socket.connected && responseText) {
-              const now = new Date();
-              const hours = String(now.getHours()).padStart(2, '0');
-              const minutes = String(now.getMinutes()).padStart(2, '0');
-              const seconds = String(now.getSeconds()).padStart(2, '0');
-              const timeStr = `${hours}:${minutes}:${seconds}`;
-              
-              const responseMessage = {
-                id: Date.now() + Math.random(), // Garantir ID único
-                user: '🤖 AI Assistente',
-                time: timeStr,
-                timestamp: now.toISOString(),
-                text: responseText,
-                self: false
-              };
-              
-              socket.emit('chat:message', responseMessage);
-              console.log('✅ Mascote respondeu no chat:', responseText);
-              
-              // Enviar resposta do robô para os ouvintes falarem também
-              socket.emit('robot:answer', {
-                text: responseText,
-                question: textToRead,
-                timestamp: Date.now()
-              });
-              console.log('📡 Resposta do robô enviada para ouvintes:', responseText);
-            }
-            
-            // Fazer o mascote falar a resposta
-            if (responseText) {
-              makeMascotSpeak(responseText, true);
-            }
-            
-            // Não ler a mensagem original se já respondeu
-            return;
-          }
-        }
-        
-        // Fazer o robô ler a mensagem do chat normalmente
+        // Fazer o robô ler a mensagem do chat normalmente (apenas se não for pergunta nem pedido)
           if (textToRead.trim()) {
             // Adicionar prefixo fofo
             const robotMessage = `${message.user} disse: ${textToRead}`;
@@ -3513,62 +3687,143 @@ const MixerConsole = ({
         }
     };
     
+    // ============================================
+    // SISTEMA SIMPLIFICADO DE BUSCA NA INTERNET
+    // Quando uma mensagem é recebida (voz ou texto):
+    // 1. Detecta se é uma pergunta
+    // 2. Busca resposta na internet
+    // 3. Envia resposta no chat
+    // 4. Faz o robô falar em voz alta
+    // ============================================
+    
     const handleChatMessage = async (message) => {
-      // Ignorar mensagens do próprio DJ e do próprio mascote
-      if (message.self || message.user === 'DJ' || message.user === '🤖 AI Assistente') return;
+      console.log('📨 [Sistema Busca] ========== MENSAGEM RECEBIDA ==========');
+      console.log('📨 [Sistema Busca] Dados:', {
+        id: message.id,
+        user: message.user,
+        text: message.text,
+        timestamp: message.timestamp
+      });
       
-      // Verificar se é uma mensagem nova
-      if (message && message.id !== lastMessageIdRef.current) {
-        lastMessageIdRef.current = message.id;
+      // Ignorar mensagens do próprio sistema
+      if (!message || !message.text || message.user === '🤖 AI Assistente' || message.user === 'DJ') {
+        console.log('ℹ️ [Sistema Busca] Mensagem ignorada (sistema ou inválida)');
+        return;
+      }
+      
+      // Verificar se já processamos esta mensagem
+      if (message.id === lastMessageIdRef.current) {
+        console.log('ℹ️ [Sistema Busca] Mensagem já processada:', message.id);
+        return;
+      }
+      
+      lastMessageIdRef.current = message.id;
+      
+      const questionText = message.text.trim();
+      
+      // Verificar se é uma pergunta
+      const isQuestionResult = isQuestion(questionText);
+      console.log('🔍 [Sistema Busca] É pergunta?', isQuestionResult);
+      
+      if (!isQuestionResult) {
+        console.log('ℹ️ [Sistema Busca] Não é pergunta, ignorando');
+        return;
+      }
+      
+      console.log('✅ [Sistema Busca] ========== PERGUNTA DETECTADA ==========');
+      console.log('✅ [Sistema Busca] Pergunta:', questionText);
+      
+      // Fazer o robô falar que está pesquisando
+      makeMascotSpeak('Deixa eu pesquisar...', false);
+      
+      try {
+        // Buscar resposta na internet
+        console.log('🔍 [Sistema Busca] Iniciando busca na internet...');
+        const searchResult = await aiSearchService.searchAnswer(questionText);
         
-        const userName = message.user || 'Ouvinte';
+        console.log('📊 [Sistema Busca] Resultado completo da busca:', JSON.stringify(searchResult, null, 2));
+        console.log('📊 [Sistema Busca] Success:', searchResult?.success);
+        console.log('📊 [Sistema Busca] Answer:', searchResult?.answer);
+        console.log('📊 [Sistema Busca] Source:', searchResult?.source);
         
-        // Verificar se é uma pessoa diferente e saudá-la
-        if (!greetedUsersRef.current.has(userName)) {
-          // Marcar como saudado
-          greetedUsersRef.current.add(userName);
-          
-          // Saudação personalizada para nova pessoa
-          const greeting = 'Sou seu amigo Robô, mim diz o que você deseja';
-          
-          // Enviar saudação no chat
-          if (socket && socket.connected) {
-            const now = new Date();
-            const hours = String(now.getHours()).padStart(2, '0');
-            const minutes = String(now.getMinutes()).padStart(2, '0');
-            const seconds = String(now.getSeconds()).padStart(2, '0');
-            const timeStr = `${hours}:${minutes}:${seconds}`;
+        let responseText = '';
+        
+        if (searchResult && searchResult.success && searchResult.answer) {
+          responseText = searchResult.answer;
+          console.log('✅ [Sistema Busca] Resposta encontrada:', responseText);
+        } else {
+          // Mensagem mais específica baseada no motivo da falha
+          const source = searchResult?.source || 'unknown';
+          if (source === 'no_api_key') {
+            responseText = 'Erro: Chave da API não configurada. Configure VITE_GEMINI_API_KEY no arquivo .env';
+          } else if (source === 'network_error') {
+            responseText = 'Erro de conexão. Verifique sua internet e tente novamente.';
+          } else if (source === 'api_error') {
+            const error = searchResult?.error || '';
+            const code = searchResult?.code || searchResult?.status || '';
+            console.error('❌ [Sistema Busca] Detalhes do erro da API:', error);
+            console.error('❌ [Sistema Busca] Código do erro:', code);
+            console.error('❌ [Sistema Busca] Erro completo:', searchResult);
             
-            const greetingMessage = {
-              id: Date.now() + Math.random(),
-              user: '🤖 AI Assistente',
-              time: timeStr,
-              timestamp: now.toISOString(),
-              text: greeting,
-              self: false
-            };
-            
-            socket.emit('chat:message', greetingMessage);
-            console.log('✅ Mascote saudou nova pessoa:', userName);
+            if (code === 401 || error.includes('API_KEY_INVALID') || error.includes('UNAUTHENTICATED') || error.includes('API key not valid')) {
+              responseText = 'Erro: Chave da API inválida ou expirada. Verifique se VITE_GEMINI_API_KEY está correta no arquivo .env e reinicie o servidor.';
+            } else if (code === 429 || error.includes('RESOURCE_EXHAUSTED') || error.includes('quota')) {
+              responseText = 'Muitas requisições ou cota excedida. Aguarde um momento e tente novamente.';
+            } else if (code === 400 || error.includes('INVALID_ARGUMENT') || error.includes('Bad Request')) {
+              responseText = 'Erro na requisição. O modelo pode não estar disponível ou a pergunta está mal formatada.';
+            } else if (code === 403 || error.includes('PERMISSION_DENIED') || error.includes('Forbidden')) {
+              responseText = 'Erro: Permissão negada. Verifique se a API key tem as permissões corretas no Google Cloud Console.';
+            } else if (code === 404 || error.includes('NOT_FOUND') || error.includes('model not found')) {
+              responseText = 'Erro: Modelo não encontrado. O modelo gemini-1.5-flash pode não estar disponível.';
+            } else if (source === 'cors_error') {
+              responseText = 'Erro de CORS. A API pode não permitir requisições diretas do navegador.';
+            } else {
+              responseText = `Erro ao conectar com o serviço de busca (${code || 'desconhecido'}). Verifique os logs do console para mais detalhes.`;
+            }
+          } else if (source === 'blocked' || source === 'safety_blocked') {
+            responseText = 'Desculpe, não posso responder essa pergunta por questões de segurança.';
+          } else {
+            responseText = 'Desculpe, não consegui encontrar a resposta para essa pergunta.';
           }
-          
-          // Fazer o mascote falar a saudação
-          makeMascotSpeak(greeting, true);
-          
-          // Aguardar um pouco antes de processar a mensagem original
-          setTimeout(() => {
-            // Continuar processamento normal da mensagem
-            processMessageNormal(message);
-          }, 2000); // 2 segundos de delay para dar tempo da saudação
-          
-          return; // Retornar aqui para não processar a mensagem imediatamente
+          console.log('⚠️ [Sistema Busca] Resposta não encontrada. Source:', source);
+          console.log('⚠️ [Sistema Busca] Resultado completo:', searchResult);
         }
         
-        // Processar mensagem normalmente se já foi saudado
-        processMessageNormal(message);
+        // Enviar resposta no chat
+        if (responseText && responseText.trim()) {
+          console.log('📝 [Sistema Busca] Enviando resposta no chat...');
+          const sent = await sendChatMessage(responseText);
+          
+          if (sent) {
+            console.log('✅ [Sistema Busca] Resposta enviada no chat com sucesso');
+          } else {
+            console.error('❌ [Sistema Busca] Falha ao enviar resposta no chat');
+          }
+          
+          // Fazer o robô falar a resposta em voz alta
+          console.log('🔊 [Sistema Busca] Fazendo robô falar a resposta...');
+          makeMascotSpeak(responseText, true);
+          
+          // Emitir evento para ouvintes
+          if (socket && socket.connected) {
+            socket.emit('robot:answer', { text: responseText });
+            console.log('📡 [Sistema Busca] Resposta emitida para ouvintes');
+          }
+        }
+        
+        console.log('✅ [Sistema Busca] ========== PROCESSAMENTO CONCLUÍDO ==========');
+        
+      } catch (error) {
+        console.error('❌ [Sistema Busca] ========== ERRO ==========');
+        console.error('❌ [Sistema Busca] Erro:', error);
+        
+        const errorMessage = 'Ops, tive um problema ao buscar a resposta. Tente novamente!';
+        await sendChatMessage(errorMessage);
+        makeMascotSpeak(errorMessage, true);
       }
     };
     
+    console.log('🎧 [Robô MixerConsole] Configurando listener de chat:message');
     socket.on('chat:message', handleChatMessage);
     
     return () => {
