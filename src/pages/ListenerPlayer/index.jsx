@@ -477,10 +477,20 @@ const ListenerPlayer = () => {
   const animationRef = useRef(null);
   const masterVolumeRef = useRef(100);
   const isProcessingOfferRef = useRef(false);
+  const currentBroadcasterIdRef = useRef(null);
+  const isWebRTCConnectingRef = useRef(false);
+  const hasUserGivenPermissionRef = useRef(false); // Flag para indicar se o usuário já deu permissão para reproduzir
+  
+  // SOLUÇÃO 3: Estado de conexão como REF, não STATE
+  const connectionStateRef = useRef('idle'); // idle | requesting | connecting | connected
+  const offerReceivedRef = useRef(false);
   
   const [status, setStatus] = useState('Conectando...');
   const [isLive, setIsLive] = useState(false);
-  const [volume, setVolume] = useState(80);
+  const [volume, setVolume] = useState(() => {
+    const saved = localStorage.getItem('listenerVolume');
+    return saved ? parseInt(saved) : 80;
+  });
   const [needsManualPlay, setNeedsManualPlay] = useState(false);
   const [currentTrack, setCurrentTrack] = useState({
     title: 'Aguardando transmissão...',
@@ -513,6 +523,23 @@ const ListenerPlayer = () => {
     const dataArray = new Uint8Array(bufferLength);
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
+    
+    // Conectar o elemento de áudio ao analyser para visualização
+    // IMPORTANTE: Verificar se já existe um MediaElementSource antes de criar
+    try {
+      const source = audioContext.createMediaElementSource(audioRef.current);
+      source.connect(analyser);
+      analyser.connect(audioContext.destination);
+      console.log('✅ Analyser conectado ao elemento de áudio');
+    } catch (error) {
+      if (error.message && error.message.includes('already connected')) {
+        console.log('ℹ️ MediaElementSource já existe, usando existente para visualização');
+        // Tentar conectar o analyser de outra forma se possível
+        // Mas geralmente não é possível se já está conectado
+      } else {
+        console.warn('⚠️ Erro ao conectar analyser:', error);
+      }
+    }
     
     const updateCanvasSize = () => {
         try {
@@ -759,11 +786,589 @@ const ListenerPlayer = () => {
           }
         });
         
+        // Função para criar conexão WebRTC
+        const createWebRTCConnection = (broadcasterId) => {
+          // CRÍTICO: Verificar e setar flag ANTES de qualquer outra verificação
+          if (isWebRTCConnectingRef.current) {
+            console.log('⏳ Conexão WebRTC já está sendo criada, ignorando...');
+            return;
+          }
+          
+          // Setar flag imediatamente para evitar múltiplas chamadas
+          isWebRTCConnectingRef.current = true;
+          
+          // Se já está conectado ao mesmo broadcaster e a conexão está válida, não recriar
+          if (currentBroadcasterIdRef.current === broadcasterId && 
+              peerConnectionRef.current &&
+              peerConnectionRef.current.connectionState === 'connected' &&
+              peerConnectionRef.current.signalingState !== 'closed') {
+            console.log('✅ Já conectado a este broadcaster, ignorando...');
+            isWebRTCConnectingRef.current = false; // Resetar flag se não vai criar
+            return;
+          }
+          
+          // CRÍTICO: Sempre limpar conexão antiga antes de criar nova
+          // Isso garante que quando o DJ desliga e liga novamente, uma nova conexão é criada
+          if (peerConnectionRef.current) {
+            console.log('🧹 Limpando conexão antiga antes de criar nova...');
+            console.log('📊 Estado da conexão antiga:', {
+              connectionState: peerConnectionRef.current.connectionState,
+              signalingState: peerConnectionRef.current.signalingState
+            });
+            
+            try {
+              // Remover todos os event handlers antes de fechar
+              peerConnectionRef.current.onconnectionstatechange = null;
+              peerConnectionRef.current.oniceconnectionstatechange = null;
+              peerConnectionRef.current.ontrack = null;
+              peerConnectionRef.current.onicecandidate = null;
+              
+              if (peerConnectionRef.current.connectionState !== 'closed' &&
+                  peerConnectionRef.current.signalingState !== 'closed') {
+                peerConnectionRef.current.close();
+              }
+            } catch (e) {
+              // Ignorar erro se já estiver fechada
+              console.log('ℹ️ Erro ao fechar conexão antiga (pode já estar fechada):', e.message);
+            }
+            peerConnectionRef.current = null;
+          }
+          
+          // Limpar srcObject do áudio também
+          if (audioRef.current && audioRef.current.srcObject) {
+            try {
+              audioRef.current.pause();
+              audioRef.current.srcObject = null;
+              console.log('🧹 srcObject do áudio limpo');
+            } catch (e) {
+              // Ignorar erro
+            }
+          }
+          
+          try {
+            isWebRTCConnectingRef.current = true;
+            currentBroadcasterIdRef.current = broadcasterId;
+            
+            // Limpar conexão anterior se existir
+            if (peerConnectionRef.current) {
+              try {
+                peerConnectionRef.current.close();
+              } catch (e) {
+                // Ignorar erro
+              }
+            }
+            
+            // Criar RTCPeerConnection
+            const pc = new RTCPeerConnection({
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+              ]
+            });
+            
+            peerConnectionRef.current = pc;
+            
+            // Handler para receber stream de áudio
+            pc.ontrack = (event) => {
+              console.log('✅ Stream de áudio recebido via WebRTC', event);
+              console.log('📊 Streams disponíveis:', event.streams.length);
+              console.log('📊 Tracks disponíveis:', event.track);
+              console.log('📊 Track muted:', event.track.muted, 'enabled:', event.track.enabled);
+              isWebRTCConnectingRef.current = false;
+              
+              // IMPORTANTE: Desmutar o track se estiver muted
+              if (event.track && event.track.muted) {
+                console.log('🔊 Track está muted, tentando desmutar...');
+                // Não podemos desmutar diretamente, mas podemos verificar se há problema
+                event.track.enabled = true;
+              }
+              
+              if (audioRef.current) {
+                let streamToUse = null;
+                
+                if (event.streams && event.streams.length > 0) {
+                  streamToUse = event.streams[0];
+                  console.log('🎵 Usando stream do evento:', streamToUse);
+                } else if (event.track) {
+                  // Se não houver streams, criar um novo stream com o track
+                  streamToUse = new MediaStream([event.track]);
+                  console.log('🎵 Criando novo stream com track recebido');
+                }
+                
+                if (streamToUse) {
+                  console.log('🎵 Configurando stream no elemento de áudio:', streamToUse);
+                  console.log('🎵 Tracks no stream:', streamToUse.getTracks());
+                  
+                  // Verificar e configurar todos os tracks
+                  streamToUse.getAudioTracks().forEach(track => {
+                    console.log('📊 Track antes:', track.id, 'muted:', track.muted, 'enabled:', track.enabled);
+                    track.enabled = true;
+                    
+                    // Adicionar listener para quando o track ficar unmuted
+                    track.onunmute = () => {
+                      console.log('🔊 Track ficou unmuted!', track.id);
+                    };
+                    
+                    track.onmute = () => {
+                      console.warn('🔇 Track ficou muted!', track.id);
+                    };
+                    
+                    if (track.muted) {
+                      console.warn('⚠️ Track está muted - aguardando dados de áudio...');
+                      // O track ficará unmuted automaticamente quando houver dados de áudio fluindo
+                    }
+                  });
+                  
+                  audioRef.current.srcObject = streamToUse;
+                  
+                  // Aplicar volume salvo quando o srcObject for definido
+                  const finalVolume = (volume / 100) * (masterVolumeRef.current / 100);
+                  audioRef.current.volume = finalVolume;
+                
+                  // Adicionar listener para verificar quando o track ficar unmuted
+                  const checkUnmute = setInterval(() => {
+                    const tracks = streamToUse.getAudioTracks();
+                    tracks.forEach(track => {
+                      if (!track.muted && track.readyState === 'live') {
+                        console.log('✅ Track está unmuted e live!', track.id);
+                        clearInterval(checkUnmute);
+                    }
+                    });
+                  }, 500);
+                  
+                  // Limpar após 10 segundos
+                  setTimeout(() => clearInterval(checkUnmute), 10000);
+                  
+                  // Verificar se o stream tem tracks de áudio
+                  const audioTracks = streamToUse.getAudioTracks();
+                  if (audioTracks.length > 0) {
+                    console.log('✅ Stream de áudio configurado com', audioTracks.length, 'track(s)');
+                    console.log('📊 Estado final dos tracks:', audioTracks.map(t => ({
+                      id: t.id,
+                      muted: t.muted,
+                      enabled: t.enabled,
+                      readyState: t.readyState
+                    })));
+                    
+                    // Verificar estado do elemento de áudio após configurar
+                    setTimeout(() => {
+                      if (audioRef.current) {
+                        console.log('🎵 Estado do elemento de áudio após configurar:', {
+                          srcObject: !!audioRef.current.srcObject,
+                          paused: audioRef.current.paused,
+                          muted: audioRef.current.muted,
+                          volume: audioRef.current.volume,
+                          readyState: audioRef.current.readyState,
+                          currentTime: audioRef.current.currentTime,
+                          duration: audioRef.current.duration,
+                          autoplay: audioRef.current.autoplay
+                        });
+                        
+                        // Verificar tracks no srcObject
+                        if (audioRef.current.srcObject) {
+                          const objTracks = audioRef.current.srcObject.getTracks();
+                          console.log('📊 Tracks no srcObject do elemento:', objTracks.length);
+                          objTracks.forEach(track => {
+                            console.log('📊 Track no elemento:', {
+                              id: track.id,
+                              kind: track.kind,
+                              muted: track.muted,
+                              enabled: track.enabled,
+                              readyState: track.readyState
+                            });
+                          });
+                          
+                          // Tentar criar um AudioContext para verificar se há dados
+                          try {
+                            const testContext = new (window.AudioContext || window.webkitAudioContext)();
+                            const testSource = testContext.createMediaStreamSource(audioRef.current.srcObject);
+                            const testAnalyser = testContext.createAnalyser();
+                            testAnalyser.fftSize = 256;
+                            testSource.connect(testAnalyser);
+                            
+                            const testData = new Uint8Array(testAnalyser.frequencyBinCount);
+                            
+                            const checkData = setInterval(() => {
+                              testAnalyser.getByteFrequencyData(testData);
+                              const max = Math.max(...testData);
+                              const avg = testData.reduce((a, b) => a + b, 0) / testData.length;
+                              console.log('📊 Dados de áudio detectados:', {
+                                max: max,
+                                avg: avg.toFixed(2),
+                                hasData: max > 0 || avg > 0
+                              });
+                              
+                              if (max > 0 || avg > 0) {
+                                console.log('✅ Há dados de áudio fluindo!');
+                                clearInterval(checkData);
+                                try {
+                                  if (testContext.state !== 'closed') {
+                                    testContext.close();
+                    }
+                                } catch (e) {
+                                  // Ignorar erro se já estiver fechado
+                                }
+                              }
+                            }, 500);
+                            
+                            setTimeout(() => {
+                              clearInterval(checkData);
+                              try {
+                                if (testContext.state !== 'closed') {
+                                  testContext.close();
+                                }
+                              } catch (e) {
+                                // Ignorar erro se já estiver fechado
+                              }
+                            }, 10000);
+                          } catch (e) {
+                            console.warn('⚠️ Erro ao verificar dados de áudio:', e);
+                          }
+                        }
+                      }
+                    }, 1000);
+                    
+                    // Adicionar listeners para debug
+                    if (audioRef.current) {
+                      audioRef.current.addEventListener('loadedmetadata', () => {
+                        console.log('📊 [AUDIO] Metadados carregados:', {
+                          duration: audioRef.current.duration,
+                          readyState: audioRef.current.readyState,
+                          srcObject: !!audioRef.current.srcObject
+                        });
+                      });
+                      
+                      audioRef.current.addEventListener('canplay', () => {
+                        console.log('🎵 [AUDIO] Áudio pode tocar:', {
+                          readyState: audioRef.current.readyState,
+                          paused: audioRef.current.paused,
+                          muted: audioRef.current.muted,
+                          volume: audioRef.current.volume
+                        });
+                      });
+                      
+                      audioRef.current.addEventListener('playing', () => {
+                        console.log('▶️ [AUDIO] Áudio está tocando!');
+                        console.log('📊 [AUDIO] Estado:', {
+                          currentTime: audioRef.current.currentTime,
+                          duration: audioRef.current.duration,
+                          volume: audioRef.current.volume,
+                          muted: audioRef.current.muted,
+                          readyState: audioRef.current.readyState
+                        });
+                      });
+                      
+                      audioRef.current.addEventListener('pause', () => {
+                        console.log('⏸️ [AUDIO] Áudio pausado');
+                      });
+                      
+                      audioRef.current.addEventListener('stalled', () => {
+                        console.warn('⚠️ [AUDIO] Áudio travado (stalled)');
+                      });
+                      
+                      audioRef.current.addEventListener('waiting', () => {
+                        console.warn('⏳ [AUDIO] Áudio aguardando dados (waiting)');
+                      });
+                      
+                      audioRef.current.addEventListener('error', (e) => {
+                        console.error('❌ [AUDIO] Erro no elemento:', e, audioRef.current.error);
+                            });
+                          }
+                          
+                          setConnectionStatus('connected');
+                    
+                    // Se o usuário já deu permissão antes, tentar reproduzir automaticamente
+                    if (hasUserGivenPermissionRef.current) {
+                      console.log('🔄 Usuário já deu permissão - tentando reproduzir automaticamente...');
+                      setNeedsManualPlay(false);
+                          setStatus('Transmissão ao vivo');
+                      
+                      // Tentar reproduzir automaticamente após um pequeno delay
+                      setTimeout(async () => {
+                        if (audioRef.current && audioRef.current.paused) {
+                          try {
+                            await audioRef.current.play();
+                          setIsPlaying(true);
+                            console.log('✅ Áudio reproduzido automaticamente (usuário já deu permissão)');
+                        } catch (err) {
+                            console.warn('⚠️ Não foi possível reproduzir automaticamente:', err);
+                            // Se falhar, mostrar botão novamente
+                            setNeedsManualPlay(true);
+                            setStatus('Transmissão ao vivo - Clique em Reproduzir');
+                        }
+                        }
+                      }, 500);
+                      } else {
+                      setStatus('Transmissão ao vivo - Clique em Reproduzir');
+                      setNeedsManualPlay(true);
+                    }
+                    
+                    setIsLive(true);
+                  } else {
+                    console.warn('⚠️ Stream não contém tracks de áudio');
+                    }
+                } else {
+                  console.warn('⚠️ Evento ontrack sem streams ou tracks');
+                }
+              } else {
+                console.error('❌ audioRef.current não está disponível');
+              }
+            };
+            
+            // Handler para ICE candidates
+            pc.onicecandidate = (event) => {
+              if (event.candidate && socketRef.current?.connected) {
+                socketRef.current.emit('candidate', broadcasterId, event.candidate);
+                console.log('📤 ICE candidate enviado');
+                  }
+                };
+                
+            // Handler para mudanças de estado
+            pc.onconnectionstatechange = () => {
+              console.log('🔗 Estado da conexão WebRTC:', pc.connectionState);
+              console.log('🔗 Signaling state:', pc.signalingState);
+              console.log('🔗 ICE connection state:', pc.iceConnectionState);
+              
+              if (pc.connectionState === 'connected') {
+                isWebRTCConnectingRef.current = false;
+                setConnectionStatus('connected');
+                setStatus('Transmissão ao vivo - Clique em Reproduzir');
+                setIsLive(true);
+                
+                // Verificar se já temos tracks
+                if (pc.getReceivers && pc.getReceivers().length > 0) {
+                  console.log('✅ Receivers ativos:', pc.getReceivers().length);
+                  const receivers = pc.getReceivers();
+                  receivers.forEach((receiver, index) => {
+                    if (receiver.track) {
+                      console.log(`📊 Receiver ${index}:`, receiver.track.kind, receiver.track.readyState);
+                      // Se temos um track de áudio mas não temos srcObject, configurar
+                      if (receiver.track.kind === 'audio' && audioRef.current && !audioRef.current.srcObject) {
+                        const stream = new MediaStream([receiver.track]);
+                        audioRef.current.srcObject = stream;
+                        // Aplicar volume salvo quando o srcObject for definido
+                        const finalVolume = (volume / 100) * (masterVolumeRef.current / 100);
+                        audioRef.current.volume = finalVolume;
+                        console.log('🎵 Stream configurado a partir do receiver');
+                        
+                        // Se o usuário já deu permissão, tentar reproduzir automaticamente
+                        if (hasUserGivenPermissionRef.current) {
+                          setTimeout(async () => {
+                            if (audioRef.current && audioRef.current.paused) {
+                              try {
+                                await audioRef.current.play();
+                                setIsPlaying(true);
+                                setNeedsManualPlay(false);
+                                console.log('✅ Áudio reproduzido automaticamente a partir do receiver');
+                    } catch (err) {
+                                console.warn('⚠️ Não foi possível reproduzir automaticamente:', err);
+                                setNeedsManualPlay(true);
+                              }
+                            }
+                          }, 500);
+                        } else {
+                          setNeedsManualPlay(true);
+                        }
+                      }
+                    }
+                  });
+                }
+              } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                console.log('⚠️ Conexão WebRTC perdida ou desconectada:', pc.connectionState);
+                
+                // CRÍTICO: Não resetar a flag imediatamente para evitar múltiplas tentativas
+                // A flag será resetada quando criar nova conexão
+                
+                setConnectionStatus('error');
+                setStatus('Conexão WebRTC perdida - Tentando reconectar...');
+                setIsLive(false);
+                
+                // Limpar referência para permitir reconexão
+                if (pc.connectionState === 'failed') {
+                  currentBroadcasterIdRef.current = null;
+                }
+                
+                // CRÍTICO: Tentar reconectar emitindo watcher novamente
+                // Aguardar um pouco antes de tentar reconectar para dar tempo do DJ processar
+                setTimeout(() => {
+                  if (socketRef.current?.connected && currentBroadcasterIdRef.current) {
+                    console.log('🔄 Tentando reconectar - emitindo watcher...');
+                    // Resetar flag antes de emitir watcher para permitir nova conexão
+                    isWebRTCConnectingRef.current = false;
+                    socketRef.current.emit('watcher');
+                  }
+                }, 2000); // Aumentar delay para 2 segundos
+              }
+            };
+            
+            console.log('✅ [Listener] Conexão WebRTC criada, aguardando offer do DJ');
+            
+            // SOLUÇÃO 2: NÃO usar timeout cego
+            // Emitir watcher imediatamente para solicitar offer do DJ
+            if (socketRef.current?.connected && peerConnectionRef.current && 
+                peerConnectionRef.current.signalingState !== 'closed') {
+              console.log('📡 [Listener] Emitindo watcher para solicitar offer do DJ...');
+              connectionStateRef.current = 'requesting';
+              offerReceivedRef.current = false;
+              socketRef.current.emit('watcher');
+            }
+            
+            // SOLUÇÃO 2: Retry controlado por estado real da conexão
+            // Monitorar signalingState ao invés de usar timeout
+            const checkOfferInterval = setInterval(() => {
+              if (!peerConnectionRef.current) {
+                clearInterval(checkOfferInterval);
+                return;
+              }
+              
+              const pc = peerConnectionRef.current;
+              
+              // Se recebeu offer, parar verificação
+              if (pc.remoteDescription) {
+                offerReceivedRef.current = true;
+                clearInterval(checkOfferInterval);
+                console.log('✅ [Listener] Offer recebido, parando verificação');
+                return;
+              }
+              
+              // Se signalingState está estável e não recebeu offer, tentar novamente
+              if (pc.signalingState === 'stable' && !offerReceivedRef.current && 
+                  connectionStateRef.current === 'requesting') {
+                console.log('🔄 [Listener] Signaling estável mas sem offer, emitindo watcher novamente...');
+                if (socketRef.current?.connected) {
+                  socketRef.current.emit('watcher');
+                }
+                    }
+                    
+              // Se conexão foi fechada, parar verificação
+              if (pc.signalingState === 'closed' || pc.connectionState === 'closed') {
+                clearInterval(checkOfferInterval);
+                connectionStateRef.current = 'idle';
+                offerReceivedRef.current = false;
+              }
+            }, 1000); // Verificar a cada 1 segundo
+            
+            // Limpar intervalo quando componente desmontar ou conexão mudar
+            return () => {
+              clearInterval(checkOfferInterval);
+            };
+                  } catch (error) {
+            isWebRTCConnectingRef.current = false;
+            console.error('❌ Erro ao criar conexão WebRTC:', error);
+                    setConnectionStatus('error');
+            setStatus('Erro ao criar conexão WebRTC');
+          }
+        };
+        
         // Adicionar todos os outros handlers de eventos
         socketRef.current.on('broadcaster', (data) => {
         try {
           const broadcasterData = typeof data === 'object' ? data : { broadcasterId: data };
-          console.log('📡 Broadcaster detectado:', broadcasterData.broadcasterId);
+          const isHeartbeat = broadcasterData.heartbeat === true;
+          
+          // CRÍTICO: Verificar se o broadcaster está realmente transmitindo
+          if (!broadcasterData.streaming) {
+            console.log('ℹ️ Broadcaster detectado mas não está transmitindo ainda');
+            // Não fazer nada se não está transmitindo
+            return;
+          }
+          
+          // Se for apenas um heartbeat e já está conectado, apenas atualizar estado
+          if (isHeartbeat) {
+            const hasValidConnection = peerConnectionRef.current && 
+                                      peerConnectionRef.current.connectionState === 'connected' &&
+                                      peerConnectionRef.current.signalingState !== 'closed' &&
+                                      currentBroadcasterIdRef.current === broadcasterData.broadcasterId;
+            
+            if (hasValidConnection) {
+              // Já está conectado, apenas atualizar nome da rádio se mudou
+              if (broadcasterData.radioName) {
+                setRadioName(broadcasterData.radioName);
+                  }
+              return; // Não fazer nada se já está conectado
+            } else {
+              // Heartbeat recebido mas não está conectado - tentar conectar
+              console.log('💓 Heartbeat recebido - DJ está transmitindo, tentando conectar...');
+              // Continuar para criar conexão
+            }
+          } else {
+            console.log('📡 Broadcaster detectado e transmitindo:', broadcasterData.broadcasterId);
+          }
+          
+          // CRÍTICO: Se já está conectando, verificar se realmente precisa criar nova conexão
+          if (isWebRTCConnectingRef.current) {
+            // Verificar se a conexão que está sendo criada é válida
+            const hasValidConnection = peerConnectionRef.current && 
+                                      peerConnectionRef.current.connectionState === 'connected' &&
+                                      peerConnectionRef.current.signalingState !== 'closed' &&
+                                      currentBroadcasterIdRef.current === broadcasterData.broadcasterId;
+            
+            if (hasValidConnection) {
+              console.log('⏳ Já está conectando e tem conexão válida, ignorando evento broadcaster duplicado...');
+              return;
+            }
+            
+            // Se está conectando mas a conexão não é válida, verificar se já tem uma conexão sendo criada
+            const hasPeerConnection = peerConnectionRef.current && 
+                                         peerConnectionRef.current.signalingState !== 'closed';
+            
+            // CRÍTICO: Verificar se a conexão está em estado ruim (disconnected, failed, closed)
+            const isConnectionBad = peerConnectionRef.current && (
+              peerConnectionRef.current.connectionState === 'disconnected' ||
+              peerConnectionRef.current.connectionState === 'failed' ||
+              peerConnectionRef.current.connectionState === 'closed' ||
+              peerConnectionRef.current.signalingState === 'closed'
+            );
+            
+            // Se a conexão está em estado ruim, limpar e permitir criar nova
+            if (isConnectionBad) {
+              console.log('🧹 [Listener] Conexão em estado ruim, limpando para criar nova...');
+              try {
+                if (peerConnectionRef.current) {
+                  peerConnectionRef.current.onconnectionstatechange = null;
+                  peerConnectionRef.current.oniceconnectionstatechange = null;
+                  peerConnectionRef.current.ontrack = null;
+                  peerConnectionRef.current.onicecandidate = null;
+                  if (peerConnectionRef.current.connectionState !== 'closed') {
+                    peerConnectionRef.current.close();
+                  }
+                }
+              } catch (e) {
+                console.warn('⚠️ [Listener] Erro ao limpar conexão ruim:', e);
+              }
+              peerConnectionRef.current = null;
+              isWebRTCConnectingRef.current = false;
+              currentBroadcasterIdRef.current = null;
+              // Continuar para criar nova conexão
+            } else if (hasPeerConnection) {
+              // Verificar se já tem remoteDescription (significa que recebeu offer)
+              const hasRemoteDescription = peerConnectionRef.current.remoteDescription !== null;
+              
+              if (hasRemoteDescription) {
+                // Já recebeu offer, não criar nova conexão
+                console.log('⏳ Já está criando conexão e recebeu offer, ignorando evento broadcaster duplicado...');
+                return;
+              } else {
+                // Não recebeu offer ainda
+                // Se a flag foi resetada (significa que passou tempo sem receber offer), permitir criar nova conexão
+                if (!isWebRTCConnectingRef.current) {
+                  console.log('⚠️ Flag foi resetada (offer não recebido), permitindo criar nova conexão...');
+                  // Continuar para criar nova conexão
+                } else {
+                  // Ainda está aguardando offer, não criar nova conexão ainda
+                  console.log('⏳ Aguardando offer do DJ...');
+                  return;
+                }
+              }
+            }
+            
+            // Se a flag está setada mas não há conexão, pode ser que a conexão anterior foi limpa
+            // Neste caso, resetar flag para permitir nova tentativa
+            if (isWebRTCConnectingRef.current && !peerConnectionRef.current) {
+              console.log('⚠️ Flag estava setada mas não há conexão ativa, resetando...');
+              isWebRTCConnectingRef.current = false;
+            }
+          }
           
           // Atualizar nome da rádio se fornecido
           if (broadcasterData.radioName) {
@@ -771,191 +1376,198 @@ const ListenerPlayer = () => {
             console.log('✅ Nome da rádio recebido:', broadcasterData.radioName);
           }
           
-          // Verificar se é streaming direto via Socket.IO
-          if (broadcasterData.directStream || broadcasterData.streaming) {
-            console.log('✅ Streaming direto detectado - preparando para receber chunks de áudio');
-            setConnectionStatus('connecting');
-            setStatus('Conectando ao stream direto...');
-            setIsLive(true);
+          // Iniciar conexão WebRTC apenas se necessário
+          if (broadcasterData.broadcasterId) {
+            // Verificar se precisa criar nova conexão
+            // CRÍTICO: Criar nova conexão se:
+            // 1. Não tem peerConnection
+            // 2. O broadcaster mudou
+            // 3. A conexão está fechada, falhou ou desconectada
+            // 4. A conexão existe mas não está conectada
+            // 5. O broadcasterId foi resetado para null (após broadcaster_left)
+            // CRÍTICO: Verificar se tem conexão válida
+            // Uma conexão é válida apenas se:
+            // 1. Existe peerConnection
+            // 2. Está conectada (connectionState === 'connected')
+            // 3. Signaling não está fechado
+            // 4. O broadcasterId atual corresponde ao novo
+            // 5. O broadcasterId não foi resetado para null (após broadcaster_left)
+            const hasValidConnection = peerConnectionRef.current && 
+                                      peerConnectionRef.current.connectionState === 'connected' &&
+                                      peerConnectionRef.current.signalingState !== 'closed' &&
+                                      currentBroadcasterIdRef.current !== null && // CRÍTICO: Se foi resetado, não é válido
+                                      currentBroadcasterIdRef.current === broadcasterData.broadcasterId;
             
-            // Preparar para receber chunks de áudio
-            if (audioRef.current) {
-              // Limpar qualquer stream anterior
-              audioRef.current.pause();
+            // Se não tem conexão válida, criar nova
+            const needsNewConnection = !hasValidConnection;
+            
+            if (needsNewConnection) {
+              // CRÍTICO: Verificar se já está criando conexão para evitar múltiplas tentativas
+              if (isWebRTCConnectingRef.current) {
+                console.log('ℹ️ [Listener] Já está criando conexão WebRTC, ignorando broadcaster duplicado');
+                return;
+              }
               
-              // Usar MediaSource API para streaming contínuo
-              if ('MediaSource' in window) {
-                // Tentar diferentes tipos MIME suportados
-                const mimeTypes = [
-                  'audio/webm;codecs=opus',
-                  'audio/webm',
-                  'audio/ogg;codecs=opus',
-                  'audio/ogg'
-                ];
+              // CRÍTICO: Verificar se já tem PeerConnection em estado ruim (disconnected, failed, closed)
+              // Se estiver em estado ruim, limpar antes de criar nova
+              if (peerConnectionRef.current) {
+                const connectionState = peerConnectionRef.current.connectionState;
+                const signalingState = peerConnectionRef.current.signalingState;
+                const isBadState = connectionState === 'disconnected' ||
+                                   connectionState === 'failed' ||
+                                   connectionState === 'closed' ||
+                                   signalingState === 'closed';
                 
-                let mimeType = null;
-                for (const type of mimeTypes) {
-                  if (MediaSource.isTypeSupported(type)) {
-                    mimeType = type;
-                    console.log('✅ Tipo MIME suportado:', mimeType);
-                    break;
+                // CRÍTICO: Se não está conectada E não está em processo de conexão, considerar estado ruim
+                const isNotConnecting = connectionState !== 'connecting' && 
+                                       connectionState !== 'connected' &&
+                                       signalingState !== 'have-local-offer' &&
+                                       signalingState !== 'have-remote-offer' &&
+                                       signalingState !== 'have-local-pranswer' &&
+                                       signalingState !== 'have-remote-pranswer';
+                
+                if (isBadState || isNotConnecting) {
+                  console.log('🧹 [Listener] Limpando PeerConnection em estado ruim antes de criar nova...', {
+                    connectionState,
+                    signalingState,
+                    isBadState,
+                    isNotConnecting
+                  });
+                  try {
+                    peerConnectionRef.current.onconnectionstatechange = null;
+                    peerConnectionRef.current.oniceconnectionstatechange = null;
+                    peerConnectionRef.current.ontrack = null;
+                    peerConnectionRef.current.onicecandidate = null;
+                    if (peerConnectionRef.current.connectionState !== 'closed') {
+                      peerConnectionRef.current.close();
+                    }
+                  } catch (e) {
+                    console.warn('⚠️ [Listener] Erro ao limpar PeerConnection:', e);
                   }
-                }
-                
-                if (!mimeType) {
-                  console.warn('⚠️ Nenhum tipo MIME suportado para MediaSource');
-                  setConnectionStatus('error');
-                  setStatus('Formato de áudio não suportado');
+                  peerConnectionRef.current = null;
+                  // Resetar flags também
+                  isWebRTCConnectingRef.current = false;
+                  currentBroadcasterIdRef.current = null;
+                } else {
+                  // Se está em processo de conexão, aguardar
+                  console.log('ℹ️ [Listener] PeerConnection existe e está em processo de conexão, aguardando...', {
+                    connectionState,
+                    signalingState
+                  });
                   return;
                 }
-                
-                const mediaSource = new MediaSource();
-                const url = URL.createObjectURL(mediaSource);
-                audioRef.current.src = url;
-                
-                let sourceBuffer = null;
-                const audioChunksQueue = [];
-                let isSourceOpen = false;
-                let audioChunkHandler = null;
-                
-                // Handler para receber chunks de áudio (registrado antes do sourceopen)
-                audioChunkHandler = (chunkData) => {
-                  try {
-                    if (!chunkData || !chunkData.data) {
-                      console.warn('⚠️ Chunk recebido sem dados');
-                      return;
-                    }
-                    
-                    if (!sourceBuffer || !isSourceOpen) {
-                      // Se o sourceBuffer ainda não está pronto, adicionar à fila
-                      console.log('⏳ SourceBuffer não está pronto, adicionando à fila');
-                      const binaryString = atob(chunkData.data);
-                      const bytes = new Uint8Array(binaryString.length);
-                      for (let i = 0; i < binaryString.length; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                      }
-                      audioChunksQueue.push(bytes.buffer);
-                      return;
-                    }
-                    
-                    // Converter base64 para ArrayBuffer
-                    const binaryString = atob(chunkData.data);
-                    const bytes = new Uint8Array(binaryString.length);
-                    for (let i = 0; i < binaryString.length; i++) {
-                      bytes[i] = binaryString.charCodeAt(i);
-                    }
-                    
-                    if (sourceBuffer.readyState === 'open') {
-                      if (!sourceBuffer.updating) {
-                        try {
-                          sourceBuffer.appendBuffer(bytes.buffer);
-                          console.log('✅ Chunk adicionado ao buffer');
-                          
-                          // Iniciar reprodução quando tiver dados suficientes
-                          if (audioRef.current.paused && mediaSource.readyState === 'open') {
-                            audioRef.current.play().catch(err => {
-                              console.warn('⚠️ Erro ao iniciar reprodução:', err);
-                            });
-                          }
-                          
-                          setConnectionStatus('connected');
-                          setStatus('Transmissão ao vivo');
-                          setIsPlaying(true);
-                        } catch (err) {
-                          console.error('❌ Erro ao adicionar buffer:', err);
-                          // Adicionar à fila se houver erro
-                          audioChunksQueue.push(bytes.buffer);
-                        }
-                      } else {
-                        // SourceBuffer está atualizando, adicionar à fila
-                        audioChunksQueue.push(bytes.buffer);
-                      }
-                    }
-                  } catch (error) {
-                    console.error('❌ Erro ao processar chunk:', error);
+              }
+              
+              console.log('🔄 Criando nova conexão WebRTC com broadcaster:', broadcasterData.broadcasterId, '- DJ está transmitindo!');
+              
+              // CRÍTICO: Atualizar estado imediatamente para mostrar que detectou o broadcaster
+              setIsLive(true);
+              setStatus('Conectando...');
+              setConnectionStatus('connecting');
+              
+              // Limpar conexão antiga se existir
+              if (peerConnectionRef.current) {
+                try {
+                  // Remover todos os event handlers antes de fechar
+                  peerConnectionRef.current.onconnectionstatechange = null;
+                  peerConnectionRef.current.oniceconnectionstatechange = null;
+                  peerConnectionRef.current.ontrack = null;
+                  peerConnectionRef.current.onicecandidate = null;
+                  
+                  if (peerConnectionRef.current.connectionState !== 'closed') {
+                    peerConnectionRef.current.close();
                   }
-                };
+                } catch (e) {
+                  console.warn('⚠️ Erro ao limpar conexão antiga:', e);
+                }
+                peerConnectionRef.current = null;
+              }
+              
+              // Limpar srcObject do áudio
+              if (audioRef.current) {
+                try {
+                  audioRef.current.pause();
+                  audioRef.current.srcObject = null;
+                } catch (e) {
+                  // Ignorar erro
+                }
+              }
+              
+              // Resetar flags antes de criar nova conexão
+              // CRÍTICO: NÃO setar isWebRTCConnectingRef aqui - deixar createWebRTCConnection gerenciar
+              isProcessingOfferRef.current = false;
+              currentBroadcasterIdRef.current = broadcasterData.broadcasterId;
+              
+              // Criar conexão WebRTC (a função createWebRTCConnection vai setar a flag internamente)
+              createWebRTCConnection(broadcasterData.broadcasterId);
+            } else {
+              console.log('ℹ️ Verificando se conexão existente está válida...');
+              console.log('📊 Estado atual:', {
+                hasPeerConnection: !!peerConnectionRef.current,
+                connectionState: peerConnectionRef.current?.connectionState,
+                signalingState: peerConnectionRef.current?.signalingState,
+                currentBroadcasterId: currentBroadcasterIdRef.current,
+                newBroadcasterId: broadcasterData.broadcasterId
+              });
+              
+              // CRÍTICO: Verificar se a conexão está realmente válida e conectada
+              // Se não estiver, criar nova conexão mesmo que seja o mesmo broadcaster
+              const isConnectionValid = peerConnectionRef.current &&
+                                       peerConnectionRef.current.connectionState === 'connected' &&
+                                       peerConnectionRef.current.signalingState !== 'closed' &&
+                                       currentBroadcasterIdRef.current === broadcasterData.broadcasterId &&
+                                       currentBroadcasterIdRef.current !== null;
+              
+              if (isConnectionValid) {
+                // Conexão está válida, apenas atualizar estado
+                console.log('✅ Conexão válida, mantendo...');
+                setIsLive(true);
+                setStatus('Transmissão ao vivo');
+                setConnectionStatus('connected');
+              } else {
+                // Conexão não está válida, recriar completamente
+                console.log('⚠️ Conexão não está válida ou broadcaster foi resetado, recriando...');
                 
-                // Registrar handler ANTES do sourceopen para não perder chunks
-                socketRef.current.on('audio:chunk', audioChunkHandler);
-                
-                // Processar fila de chunks
-                const processQueue = () => {
-                  if (sourceBuffer && !sourceBuffer.updating && audioChunksQueue.length > 0) {
-                    const chunk = audioChunksQueue.shift();
+                // Limpar conexão antiga completamente
+                if (peerConnectionRef.current) {
                     try {
-                      sourceBuffer.appendBuffer(chunk);
-                      console.log('✅ Chunk da fila adicionado ao buffer');
-                    } catch (err) {
-                      console.error('❌ Erro ao adicionar buffer da fila:', err);
-                      // Recolocar na fila se houver erro
-                      audioChunksQueue.unshift(chunk);
+                    // Remover todos os event handlers
+                    peerConnectionRef.current.onconnectionstatechange = null;
+                    peerConnectionRef.current.oniceconnectionstatechange = null;
+                    peerConnectionRef.current.ontrack = null;
+                    peerConnectionRef.current.onicecandidate = null;
+                    
+                    if (peerConnectionRef.current.connectionState !== 'closed' &&
+                        peerConnectionRef.current.signalingState !== 'closed') {
+                      peerConnectionRef.current.close();
                     }
+                  } catch (e) {
+                    // Ignorar erro
                   }
-                };
+                  peerConnectionRef.current = null;
+                }
                 
-                mediaSource.addEventListener('sourceopen', () => {
+                // Limpar srcObject do áudio
+                if (audioRef.current) {
                   try {
-                    console.log('✅ MediaSource aberto, criando SourceBuffer...');
-                    sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-                    isSourceOpen = true;
-                    console.log('✅ SourceBuffer criado, pronto para receber chunks');
-                    
-                    sourceBuffer.addEventListener('updateend', processQueue);
-                    sourceBuffer.addEventListener('error', (e) => {
-                      console.error('❌ Erro no SourceBuffer:', e);
-                    });
-                    
-                    // Processar fila acumulada
-                    if (audioChunksQueue.length > 0) {
-                      console.log(`📦 Processando ${audioChunksQueue.length} chunks da fila`);
-                      processQueue();
-                    }
-                    
-                    // Tentar iniciar reprodução
-                    if (audioRef.current.paused) {
-                      audioRef.current.play().catch(err => {
-                        console.warn('⚠️ Erro ao iniciar reprodução:', err);
-                      });
-                    }
-                  } catch (error) {
-                    console.error('❌ Erro ao configurar MediaSource:', error);
-                    setConnectionStatus('error');
-                    setStatus('Erro ao configurar stream de áudio');
-                  }
-                });
-                
-                mediaSource.addEventListener('error', (e) => {
-                  console.error('❌ Erro no MediaSource:', e);
-                  setConnectionStatus('error');
-                  setStatus('Erro no stream de áudio');
-                });
-                
-                // Limpar handler quando desconectar
-                const cleanupHandler = () => {
-                  if (audioChunkHandler) {
-                    socketRef.current.off('audio:chunk', audioChunkHandler);
-                  }
-                  if (url) {
-                    URL.revokeObjectURL(url);
-                  }
-                  if (mediaSource && mediaSource.readyState === 'open') {
-                    try {
-                      mediaSource.endOfStream();
+                    audioRef.current.pause();
+                    audioRef.current.srcObject = null;
                     } catch (e) {
                       // Ignorar erro
                     }
                   }
-                };
                 
-                socketRef.current.on('broadcaster_left', cleanupHandler);
+                // Resetar flags completamente
+                isWebRTCConnectingRef.current = false;
+                isProcessingOfferRef.current = false;
+                currentBroadcasterIdRef.current = broadcasterData.broadcasterId;
                 
                 setConnectionStatus('connecting');
-                setStatus('Aguardando dados do stream...');
-              } else {
-                console.warn('⚠️ MediaSource não disponível neste navegador');
-                setConnectionStatus('error');
-                setStatus('Navegador não suporta streaming direto');
+                setStatus('Conectando via WebRTC...');
+                setIsLive(true);
+                
+                // Criar nova conexão
+                createWebRTCConnection(broadcasterData.broadcasterId);
               }
             }
           } else {
@@ -967,21 +1579,176 @@ const ListenerPlayer = () => {
         }
       });
       
-      // Handlers WebRTC removidos - agora usamos streaming direto via Socket.IO
+      // MELHORIA 3: Handlers WebRTC com logs detalhados
+      socketRef.current.on('offer', async (id, offer) => {
+        try {
+          console.log('📥 [Listener] Offer recebido do DJ:', id);
+          
+          // CRÍTICO: Validar offer antes de processar
+          if (!offer || !offer.type || !offer.sdp) {
+            console.error('❌ [Listener] Offer inválido recebido:', offer);
+            return;
+          }
+          
+          if (!peerConnectionRef.current) {
+            console.warn('⚠️ [Listener] Offer recebido mas PeerConnection não existe');
+            return;
+          }
+          
+          const pc = peerConnectionRef.current;
+          
+          console.log('📊 [Listener] Estado da conexão antes de processar offer:', {
+            signalingState: pc.signalingState,
+            connectionState: pc.connectionState,
+            hasRemoteDescription: !!pc.remoteDescription,
+            hasLocalDescription: !!pc.localDescription,
+            connectionStateRef: connectionStateRef.current,
+            offerReceived: offerReceivedRef.current
+          });
+          
+          // CRÍTICO: Verificar se já está processando offer (evita processar múltiplos offers simultaneamente)
+          if (isProcessingOfferRef.current) {
+            console.log('ℹ️ [Listener] Já está processando offer, ignorando offer duplicado');
+            return;
+          }
+          
+          // CRÍTICO: Verificar se já tem remote description (já processou offer antes)
+          if (pc.remoteDescription) {
+            console.log('ℹ️ [Listener] Remote description já configurada, ignorando offer duplicado');
+            return;
+          }
+          
+          // CRÍTICO: Verificar se já tem local description (já criou answer)
+          // Se tem local description de qualquer tipo, já processou e não deve processar novamente
+          if (pc.localDescription) {
+            console.log('ℹ️ [Listener] Já tem local description:', pc.localDescription.type, '- ignorando offer duplicado');
+            return;
+          }
+          
+          // CRÍTICO: Só processar se estiver no estado correto
+          if (pc.signalingState === 'closed') {
+            console.warn('⚠️ [Listener] PeerConnection está fechada, não pode processar offer');
+            return;
+          }
+          
+          // CRÍTICO: Só processar se estiver em estado 'stable' (sem descrições configuradas)
+          // 'stable' é o estado inicial de uma PeerConnection recém-criada
+          // Se está em 'stable' MAS tem descrições, significa que já completou a negociação
+          if (pc.signalingState === 'stable' && (pc.remoteDescription || pc.localDescription)) {
+            console.log('ℹ️ [Listener] Já está em stable com descrições (negociação completa), ignorando offer duplicado');
+            return;
+          }
+          
+          // CRÍTICO: Se não está em 'stable', já está em processo de negociação
+          if (pc.signalingState !== 'stable') {
+            console.warn('⚠️ [Listener] Estado incorreto para receber offer:', pc.signalingState, '- já está em processo de negociação');
+            return;
+          }
+          
+          // CRÍTICO: Se está em 'stable' mas não tem descrições, é uma conexão nova e pode processar
+          // Esta é a condição correta para processar um offer
+          
+          // CRÍTICO: Marcar que está processando offer ANTES de processar
+          isProcessingOfferRef.current = true;
+          
+          // SOLUÇÃO 3: Atualizar ref
+          offerReceivedRef.current = true;
+          connectionStateRef.current = 'connecting';
+          
+          console.log('📝 [Listener] Configurando remote description (offer)...');
+          await pc.setRemoteDescription(new RTCSessionDescription(offer));
+          console.log('✅ [Listener] Offer recebido e configurado (setRemoteDescription)');
+          
+          // CRÍTICO: Verificar novamente se já tem local description antes de criar answer
+          // Isso evita race condition onde múltiplos offers chegam quase simultaneamente
+          if (pc.localDescription) {
+            console.log('ℹ️ [Listener] Local description já existe (race condition detectada), não criando novo answer');
+            return;
+          }
+          
+          // CRÍTICO: Verificar estado antes de criar answer
+          // Deve estar em 'have-remote-offer' após setar remote description
+          if (pc.signalingState !== 'have-remote-offer') {
+            console.warn('⚠️ [Listener] Estado incorreto para criar answer:', pc.signalingState, '- esperado: have-remote-offer');
+            return;
+          }
+          
+          // Criar e enviar answer
+          console.log('📝 [Listener] Criando answer...');
+          const answer = await pc.createAnswer();
+          
+          // CRÍTICO: Verificar novamente antes de setar (pode ter mudado durante createAnswer)
+          if (pc.localDescription) {
+            console.log('ℹ️ [Listener] Local description foi criado durante createAnswer (race condition), não setando novamente');
+            isProcessingOfferRef.current = false; // Resetar flag
+            return;
+          }
+          
+          if (pc.signalingState !== 'have-remote-offer') {
+            console.warn('⚠️ [Listener] Estado mudou durante createAnswer:', pc.signalingState, '- não setando local description');
+            isProcessingOfferRef.current = false; // Resetar flag
+            return;
+          }
+          
+          await pc.setLocalDescription(answer);
+          console.log('📝 [Listener] Answer criado e local description configurado');
+          
+          socketRef.current.emit('answer', id, answer);
+          console.log('📤 [Listener] Answer enviado para DJ:', id);
+          
+          // CRÍTICO: Resetar flag após processar com sucesso
+          isProcessingOfferRef.current = false;
+        } catch (error) {
+          console.error('❌ [Listener] Erro ao processar offer:', error);
+          // CRÍTICO: Resetar flag em caso de erro
+          isProcessingOfferRef.current = false;
+          connectionStateRef.current = 'idle';
+          offerReceivedRef.current = false;
+          setConnectionStatus('error');
+          setStatus('Erro ao conectar via WebRTC');
+        }
+      });
+      
+      socketRef.current.on('candidate', async (id, candidate) => {
+        try {
+          if (peerConnectionRef.current && peerConnectionRef.current.remoteDescription && candidate) {
+            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log('✅ ICE candidate adicionado');
+          }
+        } catch (error) {
+          console.error('❌ Erro ao adicionar ICE candidate:', error);
+        }
+      });
 
       socketRef.current.on('broadcaster_left', () => {
         try {
-          console.log('🛑 Broadcaster desconectado');
-          setStatus('Transmissão encerrada');
+          console.log('🛑 Broadcaster desconectado - resetando estado para permitir nova conexão');
+          setStatus('Transmissão encerrada - Aguardando nova transmissão...');
           setIsLive(false);
           setIsPlaying(false);
           setConnectionStatus('waiting');
           
-          // Limpar MediaSource
+          // Limpar WebRTC completamente
+          if (peerConnectionRef.current) {
+            try {
+              peerConnectionRef.current.close();
+            } catch (e) {
+              // Ignorar erro
+            }
+            peerConnectionRef.current = null;
+          }
+          
+          // Resetar todas as referências para permitir nova conexão
+          currentBroadcasterIdRef.current = null;
+          isWebRTCConnectingRef.current = false;
+          isProcessingOfferRef.current = false;
+          
           if (audioRef.current) {
+            try {
             audioRef.current.pause();
-            if (audioRef.current.src) {
-              URL.revokeObjectURL(audioRef.current.src);
+              audioRef.current.srcObject = null;
+            } catch (e) {
+              console.warn('⚠️ Erro ao limpar áudio:', e);
             }
           }
           
@@ -990,20 +1757,59 @@ const ListenerPlayer = () => {
             artist: 'Rádio Play DJ'
           });
           
-          // Parar o áudio
-          if (audioRef.current) {
-            audioRef.current.pause();
-            // Não definir src como vazio - isso causa erro MEDIA_ELEMENT_ERROR
-            // Apenas pausar é suficiente
-          }
-          
-          setConnectionStatus('waiting');
+          // CRÍTICO: Forçar reset completo do estado para garantir reconexão
+          // Aguardar um pouco para garantir que o estado React seja atualizado
+          setTimeout(() => {
+            if (socketRef.current?.connected) {
+              console.log('🔄 Emitindo watcher após broadcaster_left para detectar novo broadcaster');
+              
+              // Forçar reset completo das flags
+              isWebRTCConnectingRef.current = false;
+              isProcessingOfferRef.current = false;
+              
+              // Emitir watcher imediatamente
+              socketRef.current.emit('watcher');
+              
+              // Continuar emitindo watcher periodicamente até encontrar um broadcaster
+              let checkCount = 0;
+              const maxChecks = 15; // 30 segundos (15 * 2s)
+              
+              const checkInterval = setInterval(() => {
+                checkCount++;
+                
+                // Verificar estado atual (não usar closures)
+                const currentIsLive = isLive;
+                const currentStatus = connectionStatus;
+                const currentIsConnecting = isWebRTCConnectingRef.current;
+                const currentBroadcasterId = currentBroadcasterIdRef.current;
+                
+                // CRÍTICO: Parar se já está conectando, conectado, ou se já tem um broadcasterId
+                if (currentIsConnecting || currentIsLive || currentStatus === 'connected' || currentStatus === 'connecting' || currentBroadcasterId !== null) {
+                  console.log('✅ Broadcaster encontrado ou conectando, parando verificação', {
+                    isConnecting: currentIsConnecting,
+                    isLive: currentIsLive,
+                    status: currentStatus,
+                    broadcasterId: currentBroadcasterId
+                  });
+                  clearInterval(checkInterval);
+                  return;
+                }
+                
+                if (socketRef.current?.connected && !currentIsLive && currentStatus === 'waiting') {
+                  socketRef.current.emit('watcher');
+                  console.log('🔄 Continuando a verificar broadcaster...', checkCount);
+                } else if (checkCount >= maxChecks) {
+                  // Limpar intervalo após 30 segundos para evitar loop infinito
+                  console.log('⏱️ Limite de verificações atingido, parando');
+                  clearInterval(checkInterval);
+                }
+              }, 2000);
+            }
+          }, 500);
         } catch (error) {
           console.error('❌ Erro no handler de broadcaster_left:', error);
         }
       });
-
-      // Código WebRTC removido - agora usamos streaming direto via Socket.IO
     
     socketRef.current.on('listenerCount', (count) => {
         try {
@@ -1145,44 +1951,67 @@ const ListenerPlayer = () => {
   useEffect(() => {
     if (!socketReady || !socketRef.current?.connected) return;
     
-    // Evitar verificar se já está connected
-    if (connectionStatus === 'connected') return;
-    
     let intervalId = null;
     
     const checkBroadcaster = () => {
       try {
-        // Só verificar se não estiver connected, não estiver processando e não estiver live
+        // Verificar estado atual - usar valores atuais, não closures
+        const currentIsLive = isLive;
+        const currentStatus = connectionStatus;
+        const currentIsProcessing = isProcessingOfferRef.current;
+        const currentIsConnecting = isWebRTCConnectingRef.current;
+        const hasValidConnection = peerConnectionRef.current && 
+                                  peerConnectionRef.current.connectionState === 'connected' &&
+                                  peerConnectionRef.current.signalingState !== 'closed';
+        
+        // CRÍTICO: Se não está live, não está conectado e não tem conexão válida, buscar broadcaster ativamente
         if (socketRef.current?.connected && 
-            !isLive && 
-            !isProcessingOfferRef.current && 
-            connectionStatus !== 'connected') {
+            !currentIsLive && 
+            !currentIsProcessing && 
+            !currentIsConnecting &&
+            !hasValidConnection &&
+            currentStatus !== 'connected' &&
+            currentStatus !== 'connecting') {
+          // Sempre emitir watcher para buscar broadcaster ativamente
         socketRef.current.emit('watcher');
+          console.log('📡 Watcher emitido para buscar broadcaster (busca ativa a cada 2s)');
         }
       } catch (e) {
         console.warn('⚠️ Erro ao verificar broadcaster:', e);
       }
     };
     
-    // Aguardar um pouco antes da primeira verificação
-    const timeout = setTimeout(() => {
+    // Começar a verificar imediatamente
     checkBroadcaster();
+    
+    // Verificar a cada 2 segundos quando não estiver ao vivo
       intervalId = setInterval(() => {
         // Verificar novamente o status antes de emitir
-        if (connectionStatus === 'connected' || isLive || isProcessingOfferRef.current) {
-          return;
-        }
+      const currentIsLive = isLive;
+      const currentStatus = connectionStatus;
+      const currentIsProcessing = isProcessingOfferRef.current;
+      const currentIsConnecting = isWebRTCConnectingRef.current;
+      const hasValidConnection = peerConnectionRef.current && 
+                                peerConnectionRef.current.connectionState === 'connected' &&
+                                peerConnectionRef.current.signalingState !== 'closed';
+      
+      // Se não está live e não tem conexão válida, continuar buscando
+      if (!currentIsLive && 
+          !currentIsProcessing && 
+          !currentIsConnecting &&
+          !hasValidConnection &&
+          currentStatus !== 'connected' && 
+          currentStatus !== 'connecting') {
         checkBroadcaster();
-      }, 10000); // Aumentar intervalo para 10s
-    }, 2000);
+      }
+    }, 2000); // Verificar a cada 2 segundos para detectar broadcaster rapidamente
     
     return () => {
-      clearTimeout(timeout);
       if (intervalId) {
         clearInterval(intervalId);
       }
     };
-  }, [socketReady]);
+  }, [socketReady, connectionStatus, isLive]);
 
   useEffect(() => {
     if (audioRef.current) {
@@ -1192,6 +2021,36 @@ const ListenerPlayer = () => {
       } catch (e) {
         console.warn('⚠️ Erro ao atualizar volume:', e);
       }
+    }
+  }, [volume]);
+
+  // Aplicar volume quando o srcObject for definido (WebRTC stream)
+  // Isso garante que o volume seja aplicado mesmo quando a página é recarregada
+  useEffect(() => {
+    const applyVolume = () => {
+      if (audioRef.current && audioRef.current.srcObject) {
+        try {
+          const finalVolume = (volume / 100) * (masterVolumeRef.current / 100);
+          audioRef.current.volume = finalVolume;
+        } catch (e) {
+          console.warn('⚠️ Erro ao aplicar volume ao srcObject:', e);
+        }
+      }
+    };
+    
+    // Aplicar imediatamente se já tiver srcObject
+    applyVolume();
+    
+    // Também aplicar quando o elemento de áudio mudar
+    if (audioRef.current) {
+      const audio = audioRef.current;
+      audio.addEventListener('loadedmetadata', applyVolume);
+      audio.addEventListener('canplay', applyVolume);
+      
+      return () => {
+        audio.removeEventListener('loadedmetadata', applyVolume);
+        audio.removeEventListener('canplay', applyVolume);
+      };
     }
   }, [volume]);
 
@@ -1205,18 +2064,96 @@ const ListenerPlayer = () => {
 
   const handleManualPlay = async () => {
     try {
-    if (!audioRef.current || !audioRef.current.srcObject) {
+      if (!audioRef.current) {
       alert('Aguardando transmissão...');
       return;
     }
+      
+      // Verificar se há src (MediaSource URL) ou srcObject
+      if (!audioRef.current.src && !audioRef.current.srcObject) {
+        alert('Aguardando transmissão...');
+        return;
+      }
+      
+      // Log detalhado antes de reproduzir
+      console.log('🎵 Estado antes de reproduzir:', {
+        srcObject: !!audioRef.current.srcObject,
+        src: audioRef.current.src,
+        paused: audioRef.current.paused,
+        muted: audioRef.current.muted,
+        volume: audioRef.current.volume,
+        readyState: audioRef.current.readyState
+      });
+      
+      // Verificar tracks no srcObject
+      if (audioRef.current.srcObject) {
+        const tracks = audioRef.current.srcObject.getTracks();
+        console.log('📊 Tracks no srcObject:', tracks.length);
+        tracks.forEach(track => {
+          console.log('📊 Track:', {
+            id: track.id,
+            kind: track.kind,
+            muted: track.muted,
+            enabled: track.enabled,
+            readyState: track.readyState
+          });
+        });
+    }
     
       await audioRef.current.play();
+      
+      // Log após reproduzir
+      console.log('🎵 Estado após reproduzir:', {
+        paused: audioRef.current.paused,
+        muted: audioRef.current.muted,
+        volume: audioRef.current.volume,
+        readyState: audioRef.current.readyState,
+        currentTime: audioRef.current.currentTime
+      });
+      
       setIsPlaying(true);
       setNeedsManualPlay(false);
-      console.log('✅ Áudio iniciado manualmente');
+      hasUserGivenPermissionRef.current = true; // Marcar que o usuário deu permissão
+      setStatus('Transmissão ao vivo');
+      console.log('✅ Áudio iniciado manualmente - permissão salva');
+      
+      // Verificar após um tempo se está realmente tocando
+      setTimeout(() => {
+        if (audioRef.current) {
+          console.log('🎵 Estado após 2 segundos:', {
+            paused: audioRef.current.paused,
+            muted: audioRef.current.muted,
+            volume: audioRef.current.volume,
+            currentTime: audioRef.current.currentTime,
+            readyState: audioRef.current.readyState
+          });
+          
+          // Verificar se há dados fluindo
+          if (audioRef.current.srcObject) {
+            const tracks = audioRef.current.srcObject.getTracks();
+            tracks.forEach(track => {
+              console.log('📊 Track após 2 segundos:', {
+                id: track.id,
+                muted: track.muted,
+                enabled: track.enabled,
+                readyState: track.readyState
+              });
+            });
+          }
+        }
+      }, 2000);
     } catch (err) {
       console.error('❌ Erro ao reproduzir:', err);
+      console.error('❌ Detalhes do erro:', {
+        name: err.name,
+        message: err.message,
+        stack: err.stack
+      });
+      if (err.name === 'NotAllowedError') {
+        alert('⚠️ Por favor, interaja com a página primeiro (clique em qualquer lugar) e depois tente novamente.');
+      } else {
       alert(`Erro ao reproduzir áudio: ${err.message || 'Erro desconhecido'}`);
+      }
       setNeedsManualPlay(true);
     }
   };
@@ -1228,7 +2165,8 @@ const ListenerPlayer = () => {
       return;
     }
     
-    if (!audioRef.current.srcObject) {
+      // Verificar se há src (MediaSource URL) ou srcObject
+      if (!audioRef.current.src && !audioRef.current.srcObject) {
       console.warn('⚠️ Nenhum stream disponível');
       alert('Aguardando transmissão...');
       return;
@@ -1238,7 +2176,9 @@ const ListenerPlayer = () => {
         await audioRef.current.play();
         setIsPlaying(true);
         setNeedsManualPlay(false);
-        console.log('✅ Reproduzindo áudio');
+        hasUserGivenPermissionRef.current = true; // Marcar que o usuário deu permissão
+        setStatus('Transmissão ao vivo');
+        console.log('✅ Reproduzindo áudio - permissão salva');
       } else {
         audioRef.current.pause();
         setIsPlaying(false);
@@ -1248,7 +2188,7 @@ const ListenerPlayer = () => {
       console.error('❌ Erro ao alternar play/pause:', err);
       if (err.name === 'NotAllowedError') {
         setNeedsManualPlay(true);
-        alert('⚠️ Clique no botão "Reproduzir Áudio" para iniciar a reprodução');
+        alert('⚠️ Por favor, interaja com a página primeiro (clique em qualquer lugar) e depois tente novamente.');
       }
     }
   }, []);
@@ -1366,7 +2306,7 @@ const ListenerPlayer = () => {
                 </div>
               </StatusBadge>
 
-              {needsManualPlay && isLive && (
+              {needsManualPlay && isLive && connectionStatus === 'connected' && (
                 <PlayButton onClick={handleManualPlay}>
                   ▶ Reproduzir Áudio
                 </PlayButton>
@@ -1397,7 +2337,7 @@ const ListenerPlayer = () => {
                 <PlayPauseButton 
                   $playing={isPlaying}
                   onClick={togglePlayPause}
-                  disabled={!isLive || !audioRef.current?.srcObject}
+                  disabled={!isLive || (!audioRef.current?.src && !audioRef.current?.srcObject)}
                   title={isPlaying ? 'Pausar' : (isLive ? 'Tocar' : 'Aguardando transmissão...')}
                 >
                   {isPlaying ? '⏸' : '▶'}
@@ -1415,7 +2355,11 @@ const ListenerPlayer = () => {
                   min="0"
                   max="100"
                   value={volume}
-                  onChange={(e) => setVolume(parseInt(e.target.value))}
+                  onChange={(e) => {
+                    const newVolume = parseInt(e.target.value);
+                    setVolume(newVolume);
+                    localStorage.setItem('listenerVolume', newVolume.toString());
+                  }}
                 />
                 <VolumeValue>{volume}%</VolumeValue>
               </VolumeControl>
@@ -1449,20 +2393,18 @@ const ListenerPlayer = () => {
 
       <audio 
         ref={audioRef}
-        autoPlay
         onLoadedMetadata={() => {
           console.log('✅ Metadados de áudio carregados');
+          // Aplicar volume salvo quando os metadados forem carregados
           if (audioRef.current) {
-            audioRef.current.volume = 1.0;
+            const finalVolume = (volume / 100) * (masterVolumeRef.current / 100);
+            audioRef.current.volume = finalVolume;
           }
         }}
         onCanPlay={() => {
           console.log('✅ Áudio pronto para reprodução');
-          if (audioRef.current && audioRef.current.paused) {
-            audioRef.current.play().catch(err => {
-              console.warn('⚠️ Erro ao iniciar reprodução automática:', err);
-            });
-          }
+          // Não tentar reproduzir automaticamente - aguardar interação do usuário
+          setNeedsManualPlay(true);
         }}
         onPlay={() => {
           console.log('▶️ Áudio iniciado');
@@ -1682,4 +2624,5 @@ const ListenerPlayerWithErrorBoundary = () => {
 };
 
 export default ListenerPlayerWithErrorBoundary;
+
 

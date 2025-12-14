@@ -2003,6 +2003,8 @@ const MixerConsole = ({
   onRejectRequest = null,
   // MediaStreamDestination para broadcast (opcional)
   mediaStreamDestination = null,
+  // Hub (GainNode) para distribuir áudio - se fornecido, conectar a ele em vez de diretamente ao destination
+  audioHub = null,
   // Callback para quando o mascote começar a falar
   onMascotStartSpeaking = null,
   // Callback para quando o mascote parar de falar
@@ -3345,54 +3347,81 @@ const MixerConsole = ({
 
     const initializeAudioProcessing = async () => {
       try {
-        // Usar AudioContext passado como prop ou criar novo
-        let audioContextToUse = audioContext; // Prop passado do DJPanel
+        // CRÍTICO: Sempre usar o AudioContext passado como prop (AudioContext global)
+        // Não criar um novo AudioContext, pois o hub foi criado no AudioContext global
+        let audioContextToUse = audioContext; // Prop passado do DJPanel (AudioContext global)
+        
         if (!audioContextToUse || audioContextToUse.state === 'closed') {
-          // Se não foi passado ou está fechado, criar ou reutilizar o nosso
-          if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
-          audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
-          }
-          audioContextToUse = audioContextRef.current;
-        } else {
-          // Se foi passado como prop, usar ele
-          audioContextRef.current = audioContextToUse;
+          console.warn('⚠️ AudioContext não foi passado ou está fechado - não podemos processar áudio');
+          return;
         }
+        
+        // Sempre usar o AudioContext passado como prop
+        audioContextRef.current = audioContextToUse;
         
         // Se o contexto estiver suspenso, retomar
         if (audioContextToUse.state === 'suspended') {
           await audioContextToUse.resume();
         }
         
-        // Usar audioContextToUse diretamente em vez de criar uma nova constante
+        // Usar audioContextToUse diretamente
         const audioCtx = audioContextToUse;
 
         // Criar ou reutilizar MediaElementSource
         // CRÍTICO: Um HTMLAudioElement só pode ter UM MediaElementSource durante toda sua vida útil
-        if (!audioSourceRef.current) {
-          // Se recebemos MediaElementSource como prop, usar ele
-          if (mediaElementSource) {
+        // CRÍTICO: Se o elemento de áudio mudou (crossfade), precisamos recriar o MediaElementSource
+        const currentAudioElement = musicAudioRef?.current;
+        
+        // Verificar se o elemento de áudio mudou comparando com o último elemento conhecido
+        const needsRecreate = audioSourceRef.current && 
+                              lastAudioElementRef.current !== currentAudioElement &&
+                              currentAudioElement !== null;
+        
+        if (!audioSourceRef.current || needsRecreate) {
+          // Se o elemento mudou, limpar o MediaElementSource antigo
+          if (needsRecreate && audioSourceRef.current) {
+            try {
+              audioSourceRef.current.disconnect();
+              console.log('🔄 Limpando MediaElementSource antigo (elemento de áudio mudou após crossfade)');
+            } catch (e) {
+              // Ignorar erro
+            }
+            audioSourceRef.current = null;
+          }
+          
+          // Se recebemos MediaElementSource como prop e o elemento não mudou, usar ele
+          if (mediaElementSource && !needsRecreate) {
             audioSourceRef.current = mediaElementSource;
+            lastAudioElementRef.current = currentAudioElement;
             console.log('✅ Reutilizando MediaElementSource passado como prop');
-          } else {
+          } else if (currentAudioElement) {
             // Tentar criar novo apenas se não foi passado como prop
             try {
-              audioSourceRef.current = audioCtx.createMediaElementSource(musicAudioRef.current);
-              console.log('✅ MediaElementSource criado com sucesso');
+              audioSourceRef.current = audioCtx.createMediaElementSource(currentAudioElement);
+              lastAudioElementRef.current = currentAudioElement;
+              console.log('✅ MediaElementSource criado com sucesso para novo elemento');
             } catch (error) {
               // Se o elemento já está conectado, não podemos criar outro
-              if (error.name === 'InvalidStateError') {
-                console.warn('⚠️ Elemento de áudio já está conectado. Use mediaElementSource como prop.');
+              if (error.name === 'InvalidStateError' || 
+                  (error.message && error.message.includes('already connected'))) {
+                console.warn('⚠️ Elemento de áudio já está conectado. Aguardando MediaElementSource existente.');
                 // Não definir audioSourceRef.current para evitar erros futuros
                 return;
               }
               throw error; // Re-lançar outros erros
             }
+          } else {
+            console.warn('⚠️ musicAudioRef.current não está disponível');
+            return;
           }
+        } else if (audioSourceRef.current && lastAudioElementRef.current !== currentAudioElement) {
+          // Atualizar referência mesmo se não precisar recriar
+          lastAudioElementRef.current = currentAudioElement;
         }
 
         const source = audioSourceRef.current;
 
-        // Limpar conexões anteriores
+        // Limpar conexões anteriores do masterGain
         if (masterGainNodeRef.current) {
           try {
             masterGainNodeRef.current.disconnect();
@@ -3404,6 +3433,10 @@ const MixerConsole = ({
         const volume = channels.music / 100; // Volume do fader MUSIC
         masterGain.gain.value = volume;
         masterGainNodeRef.current = masterGain;
+        
+        // NOTA: A função connectMasterGain foi removida
+        // O masterGain agora só conecta ao destination local (para o DJ ouvir)
+        // O áudio para broadcast é conectado diretamente do currentNode ao hub (sem passar pelo masterGain)
 
         // Definir frequências das bandas EQ (10 bandas profissionais)
         const eqFrequencies = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
@@ -3532,9 +3565,60 @@ const MixerConsole = ({
           } catch (e) {}
         }
 
-        // Conectar ao master gain e depois ao destination
+        // CRÍTICO: Criar duas saídas separadas:
+        // 1. masterGain → hub → localVolumeGain → destination local (controlado pelo fader MUSIC e playerVolume - só para o DJ ouvir)
+        // 2. currentNode → hub diretamente (sempre 100% - para broadcast)
+        
+        // CRÍTICO: NÃO conectar masterGain diretamente ao destination
+        // O masterGain deve conectar ao hub, e o hub será conectado ao localVolumeGainNode no DJPanel
+        // Isso garante que o volume do mixer do player funciona corretamente
         currentNode.connect(masterGain);
-        masterGain.connect(audioCtx.destination);
+        
+        // CRÍTICO: Conectar masterGain ao hub (não diretamente ao destination)
+        // O hub será conectado ao localVolumeGainNode no DJPanel para controle de volume
+        if (audioHub) {
+          try {
+            masterGain.connect(audioHub);
+            console.log('✅ masterGain conectado ao hub (será conectado ao localVolumeGainNode no DJPanel)');
+          } catch (e) {
+            console.error('❌ Erro ao conectar masterGain ao hub:', e);
+            // Fallback: conectar diretamente ao destination (não ideal, mas funciona)
+            masterGain.connect(audioCtx.destination);
+          }
+        } else {
+          // Se não há hub, conectar diretamente (fallback)
+          masterGain.connect(audioCtx.destination);
+        }
+        
+        // Conectar currentNode diretamente ao hub para broadcast (sempre 100%, não afetado pelo fader)
+        if (audioHub) {
+          try {
+            // CRÍTICO: Verificar se o hub pertence ao mesmo AudioContext
+            if (audioHub.context !== audioCtx) {
+              console.error('❌ Hub pertence a um AudioContext diferente!');
+              throw new Error('Hub pertence a AudioContext diferente');
+            }
+            
+            // Conectar diretamente ao hub, SEM passar pelo masterGain
+            currentNode.connect(audioHub);
+            console.log('✅ Áudio conectado ao hub para broadcast (100% - não afetado pelo fader MUSIC)');
+          } catch (e) {
+            console.error('❌ Erro ao conectar ao hub:', e);
+          }
+        } else if (mediaStreamDestination) {
+          // Fallback: conectar diretamente ao mediaStreamDestination
+          try {
+            if (mediaStreamDestination.context !== audioCtx) {
+              console.error('❌ MediaStreamDestination pertence a um AudioContext diferente!');
+              throw new Error('MediaStreamDestination pertence a AudioContext diferente');
+            }
+            
+            currentNode.connect(mediaStreamDestination);
+            console.log('✅ Áudio conectado ao mediaStreamDestination para WebRTC (100% - não afetado pelo fader MUSIC)');
+          } catch (e) {
+            console.warn('⚠️ Erro ao conectar ao mediaStreamDestination:', e);
+          }
+        }
 
         console.log('✅ Processamento de áudio profissional inicializado');
       } catch (error) {
@@ -3547,7 +3631,11 @@ const MixerConsole = ({
     return () => {
       // Cleanup será feito na próxima inicialização
     };
-  }, [musicAudioRef, eqEnabled, eq, effects, channels.music, musicAudioRef?.current?.src]);
+  }, [musicAudioRef, eqEnabled, eq, effects, channels.music, musicAudioRef?.current?.src, musicAudioRef?.current, audioHub, mediaStreamDestination]);
+  
+  // NOTA: Este useEffect foi removido porque o masterGain NÃO deve ser conectado ao hub
+  // O hub deve receber o áudio diretamente do currentNode (antes do masterGain)
+  // Isso garante que o volume do fader MUSIC não afete o broadcast
 
   // Atualizar valores do EQ em tempo real
   useEffect(() => {
@@ -3563,12 +3651,24 @@ const MixerConsole = ({
   }, [eq, eqEnabled]);
 
   // Atualizar volume do master gain quando o fader MUSIC mudar
+  // NOTA: Isso só afeta a saída local (audioCtx.destination), NÃO o broadcast
   useEffect(() => {
     if (masterGainNodeRef.current) {
       const volume = channels.music / 100;
       masterGainNodeRef.current.gain.value = volume;
+      console.log('🔊 Volume do masterGain atualizado para saída local:', volume, '(não afeta broadcast)');
     }
-  }, [channels.music]);
+    
+    // CRÍTICO: Garantir que o hub sempre está em 100% (não afetado pelo fader)
+    // Isso é executado sempre que o fader MUSIC muda para garantir que o broadcast não é afetado
+    if (audioHub) {
+      const currentHubGain = audioHub.gain.value;
+      if (currentHubGain !== 1.0) {
+        console.warn('⚠️ Hub gain não estava em 100%! Corrigindo de', currentHubGain, 'para 1.0');
+        audioHub.gain.value = 1.0;
+      }
+    }
+  }, [channels.music, audioHub]);
 
   // Atualizar parâmetros do compressor
   useEffect(() => {
@@ -3949,11 +4049,13 @@ const MixerConsole = ({
   // Refs para processamento de áudio profissional
   const audioContextRef = useRef(null);
   const audioSourceRef = useRef(null);
+  const lastAudioElementRef = useRef(null); // Rastrear último elemento de áudio para detectar mudanças (crossfade)
   const eqNodesRef = useRef([]);
   const compressorNodeRef = useRef(null);
   const reverbNodeRef = useRef(null);
   const delayNodeRef = useRef(null);
   const masterGainNodeRef = useRef(null);
+  const broadcastOutputNodeRef = useRef(null); // Nó de saída para broadcast (sempre conectado ao hub, não ao masterGain)
   
   const handleEQMouseDown = (band, e) => {
     const faderRef = eqFaderRefs.current[band];

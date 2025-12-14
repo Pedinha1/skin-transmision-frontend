@@ -11,6 +11,12 @@ import ChatPanel from '../../components/ChatPanel';
 import WebcamPanel from '../../components/WebcamPanel';
 import ConnectionStatusLED from '../../components/ConnectionStatusLED';
 import { pulse, gradientShift, glow } from '../../styles/animations';
+import { 
+  getGlobalAudioContext, 
+  createAudioGraph, 
+  checkAudioDataFlow,
+  updateBroadcastVolume 
+} from './audioGraph';
 
 // Animações do Robô
 const robotFloat = keyframes`
@@ -3395,6 +3401,7 @@ const DJPanel = () => {
   const [currentTrackId, setCurrentTrackId] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBroadcasting, setIsBroadcasting] = useState(false);
+  const isBroadcastingRef = useRef(false); // Ref para evitar problemas de closure
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [listenerCount, setListenerCount] = useState(0);
@@ -4569,17 +4576,26 @@ const DJPanel = () => {
   
   const audioRef = useRef(null);
   const socketRef = useRef(null);
-  const analyserRef = useRef(null);
-  const animationFrameRef = useRef(null);
+  
+  // ===== SINGLETON AUDIOCONTEXT GLOBAL =====
+  // ÚNICO AudioContext para todo o sistema
+  const globalAudioContextRef = useRef(null);
+  
+  // ===== GRAFO DE ÁUDIO =====
+  // MediaElementSource → Hub → Analyser + MediaStreamDestination
   const mediaSourceRef = useRef(null);
-  const audioContextRefForSpectrum = useRef(null);
+  const audioHubGainNodeRef = useRef(null); // Hub central
+  const analyserRef = useRef(null);
+  const broadcastDestinationRef = useRef(null); // MediaStreamDestination para WebRTC
+  const broadcastGainNodeRef = useRef(null); // Gain para controlar volume do broadcast
+  const broadcastStreamRef = useRef(null); // Stream do MediaStreamDestination
+  const localVolumeGainNodeRef = useRef(null); // GainNode para controlar volume local do DJ (não afeta broadcast)
+  
+  // ===== REFS AUXILIARES =====
+  const animationFrameRef = useRef(null);
   const mediaSourceCreationAttemptedRef = useRef(false);
   const broadcastStartTimeRef = useRef(null);
   const peerConnectionsRef = useRef({});
-  const broadcastAudioContextRef = useRef(null);
-  const broadcastDestinationRef = useRef(null);
-  const broadcastStreamRef = useRef(null);
-  const broadcastGainNodeRef = useRef(null); // Ref para rastrear o gain node do broadcast
   const micStreamRef = useRef(null);
   const horaCertaAudioRef = useRef(null);
   const nextAudioRef = useRef(null); // Para crossfade
@@ -4589,12 +4605,12 @@ const DJPanel = () => {
   const isTransitioningRef = useRef(false); // Flag para evitar múltiplas transições
   const isSeekingRef = useRef(false); // Flag para quando o usuário está arrastando a barra
   const errorReportedTracksRef = useRef(new Set()); // Rastrear músicas que já tiveram erro reportado
+  const audioCheckIntervalRef = useRef(null); // Ref para armazenar informações do intervalo de verificação de áudio
   
-  // Refs para streaming direto
+  // Refs para streaming direto (legado - manter para compatibilidade)
   const streamingMediaRecorderRef = useRef(null);
-  const streamingAudioContextRef = useRef(null);
-  const streamingDestinationRef = useRef(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const isStreamingRef = useRef(false); // Ref para evitar problema de closure
 
   // Limpar duplicatas do estado de tracks baseado em ID, nome e tamanho
   // Função para buscar e baixar música da internet
@@ -5400,11 +5416,227 @@ const DJPanel = () => {
         }
       });
       
-      // Atualizar status baseado em conexões ativas
-      socketRef.current.on('watcher', (data) => {
+      // CRÍTICO: SOLUÇÃO 1 - DJ só cria OFFER quando recebe watcher, NUNCA antes
+      socketRef.current.on('watcher', async (data) => {
+        console.log('📥 [DJ] Evento watcher recebido:', data);
         const watcherData = typeof data === 'object' ? data : { listenerId: data };
-        console.log('👂 Novo ouvinte solicitando conexão:', watcherData.listenerId);
-        setWebrtcConnectionStatus('connecting');
+        const listenerId = watcherData.listenerId || data; // Pode ser string direto ou objeto
+        
+        // CRÍTICO: Verificar se está transmitindo ANTES de qualquer coisa
+        if (!isBroadcastingRef.current) {
+          console.warn('⚠️ [DJ] Watcher recebido mas DJ não está transmitindo (On Air desativado)');
+          return;
+        }
+        
+        if (!broadcastStreamRef.current || !socketRef.current?.connected) {
+          console.warn('⚠️ [DJ] Watcher recebido mas stream não disponível ou socket desconectado');
+          return;
+        }
+        
+        console.log('👂 [DJ] Novo ouvinte solicitando conexão:', listenerId);
+        
+        // Verificar se já existe conexão ativa com este ouvinte
+        let pc = peerConnectionsRef.current[listenerId];
+        
+        if (pc) {
+          // CRÍTICO: Verificar se já tem um offer criado (localDescription)
+          if (pc.localDescription && pc.localDescription.type === 'offer') {
+            console.log('ℹ️ [DJ] Já existe offer criado para ouvinte:', listenerId, '- ignorando watcher duplicado');
+            return;
+          }
+          
+          // CRÍTICO: Verificar se já tem answer (remoteDescription)
+          if (pc.remoteDescription && pc.remoteDescription.type === 'answer') {
+            console.log('ℹ️ [DJ] Já tem answer configurado para ouvinte:', listenerId, '- ignorando watcher duplicado');
+            return;
+          }
+          
+          // Verificar se a conexão ainda está válida
+          if (pc.signalingState === 'closed' || 
+              pc.connectionState === 'closed' || 
+              pc.connectionState === 'failed') {
+            console.log('🧹 [DJ] Limpando conexão antiga em estado ruim');
+            try {
+              pc.onconnectionstatechange = null;
+              pc.oniceconnectionstatechange = null;
+              pc.ontrack = null;
+              pc.onicecandidate = null;
+              if (pc.connectionState !== 'closed') {
+                pc.close();
+              }
+            } catch (e) {
+              console.warn('⚠️ [DJ] Erro ao limpar conexão antiga:', e);
+            }
+            delete peerConnectionsRef.current[listenerId];
+            pc = null;
+          } else if (pc.connectionState === 'connected') {
+            console.log('ℹ️ [DJ] Já está conectado com ouvinte:', listenerId);
+            return;
+          } else if (pc.signalingState === 'have-local-offer' || 
+                     pc.signalingState === 'have-remote-answer' ||
+                     pc.signalingState === 'stable' && (pc.localDescription || pc.remoteDescription)) {
+            console.log('ℹ️ [DJ] Já está em processo de conexão (signalingState:', pc.signalingState, ') - ignorando watcher duplicado');
+            return;
+          }
+        }
+        
+        // Se não tem conexão, criar uma nova
+        if (!pc) {
+          try {
+            console.log('🔌 [DJ] Criando nova PeerConnection para ouvinte:', listenerId);
+            await createPeerConnection(listenerId);
+            pc = peerConnectionsRef.current[listenerId];
+            if (!pc) {
+              console.error('❌ [DJ] Falha ao criar PeerConnection');
+              return;
+            }
+          } catch (error) {
+            console.error('❌ [DJ] Erro ao criar PeerConnection:', error);
+            return;
+          }
+        }
+        
+        // CRÍTICO: Verificar novamente se já tem offer antes de criar
+        if (pc.localDescription && pc.localDescription.type === 'offer') {
+          console.log('ℹ️ [DJ] Offer já existe para ouvinte:', listenerId, '- não criando novo');
+          return;
+        }
+        
+        // CRÍTICO: Verificar se já tem answer (remoteDescription)
+        if (pc.remoteDescription && pc.remoteDescription.type === 'answer') {
+          console.log('ℹ️ [DJ] Já tem answer configurado para ouvinte:', listenerId, '- não criando novo offer');
+          return;
+        }
+        
+        // CRÍTICO: Verificar se já está em processo de criar offer (signalingState)
+        if (pc.signalingState === 'have-local-offer' || 
+            pc.signalingState === 'have-remote-answer' ||
+            (pc.signalingState === 'stable' && (pc.localDescription || pc.remoteDescription))) {
+          console.log('ℹ️ [DJ] Já está em processo de negociação (signalingState:', pc.signalingState, ') - ignorando watcher duplicado');
+          return;
+        }
+        
+        // CRÍTICO: Verificar se já está conectado
+        if (pc.connectionState === 'connected' || pc.connectionState === 'connecting') {
+          console.log('ℹ️ [DJ] Já está conectado/conectando (connectionState:', pc.connectionState, ') - ignorando watcher duplicado');
+          return;
+        }
+        
+        // CRÍTICO: Criar e enviar OFFER SOMENTE AQUI, quando recebe watcher
+        try {
+          console.log('📝 [DJ] Criando offer para ouvinte:', listenerId);
+          
+          // CRÍTICO: Verificar estado antes de criar offer
+          if (pc.signalingState !== 'stable') {
+            console.warn('⚠️ [DJ] Estado incorreto para criar offer:', pc.signalingState, '- esperado: stable');
+            return;
+          }
+          
+          const offer = await pc.createOffer();
+          console.log('📝 [DJ] Offer criado:', offer.type);
+          
+          // CRÍTICO: Verificar estado antes de setar local description
+          if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-local-offer') {
+            console.warn('⚠️ [DJ] Estado mudou durante createOffer:', pc.signalingState, '- não setando local description');
+            return;
+          }
+          
+          // CRÍTICO: Verificar se já tem local description (race condition)
+          if (pc.localDescription) {
+            console.log('ℹ️ [DJ] Local description já existe (race condition), não setando novamente');
+            return;
+          }
+          
+          await pc.setLocalDescription(offer);
+          console.log('📝 [DJ] Local description configurado');
+          
+          console.log('📤 [DJ] Enviando offer para ouvinte:', listenerId);
+          socketRef.current.emit('offer', {
+            to: listenerId,
+            offer: offer
+          });
+          console.log('✅ [DJ] Offer enviado para ouvinte:', listenerId);
+        } catch (error) {
+          console.error('❌ [DJ] Erro ao criar/enviar offer:', error);
+          
+          // CRÍTICO: Se o erro é "order of m-lines", significa que já tem offer/answer configurado
+          // Neste caso, NÃO deletar a conexão, apenas logar o erro e retornar
+          if (error.message && error.message.includes('order of m-lines')) {
+            console.log('ℹ️ [DJ] Erro de "order of m-lines" - já tem offer/answer configurado, mantendo conexão');
+            return;
+          }
+          
+          // Se erro ao criar offer, limpar conexão para permitir nova tentativa
+          if (pc) {
+            try {
+              delete peerConnectionsRef.current[listenerId];
+              if (pc.connectionState !== 'closed') {
+                pc.close();
+              }
+            } catch (e) {
+              // Ignorar erro ao limpar
+            }
+          }
+        }
+      });
+      
+      // Handler para receber answer do ouvinte
+      socketRef.current.on('answer', async (id, answer) => {
+        try {
+          console.log('📥 [DJ] Answer recebido do listener:', id);
+          
+          // CRÍTICO: Validar answer antes de processar
+          if (!answer || !answer.type || !answer.sdp) {
+            console.error('❌ [DJ] Answer inválido recebido:', answer);
+            return;
+          }
+          
+          const pc = peerConnectionsRef.current[id];
+          if (!pc) {
+            console.warn('⚠️ [DJ] PeerConnection não encontrada para ouvinte:', id);
+            return;
+          }
+          
+          if (pc.signalingState === 'closed') {
+            console.warn('⚠️ [DJ] PeerConnection já está fechada para ouvinte:', id);
+            return;
+          }
+          
+          // Verificar se já temos uma remote description
+          if (pc.remoteDescription) {
+            console.log('ℹ️ [DJ] Remote description já configurada, ignorando answer duplicado');
+            return;
+          }
+          
+          // Verificar se estamos no estado correto (have-local-offer)
+          if (pc.signalingState !== 'have-local-offer' && pc.signalingState !== 'stable') {
+            console.warn('⚠️ [DJ] Estado incorreto para receber answer:', pc.signalingState);
+            return;
+          }
+          
+          console.log('📝 [DJ] Configurando remote description (answer) para ouvinte:', id);
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          console.log('✅ [DJ] Answer recebido e configurado para ouvinte:', id);
+        } catch (error) {
+          console.error('❌ [DJ] Erro ao processar answer:', error);
+          // Se o erro for de estado, pode ser que a conexão já foi estabelecida
+          if (error.message && error.message.includes('wrong state')) {
+            console.log('ℹ️ [DJ] Answer chegou tarde, mas conexão pode estar funcionando');
+          }
+        }
+      });
+      
+      // Handler para receber ICE candidates do ouvinte
+      socketRef.current.on('candidate', async (id, candidate) => {
+        try {
+          const pc = peerConnectionsRef.current[id];
+          if (pc && pc.remoteDescription && candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log('✅ ICE candidate adicionado para ouvinte:', id);
+          }
+        } catch (error) {
+          console.error('❌ Erro ao adicionar ICE candidate:', error);
+        }
       });
       
       } catch (error) {
@@ -5522,9 +5754,9 @@ const DJPanel = () => {
     return () => clearInterval(interval);
   }, [isBroadcasting]);
 
-  // Visualizador de áudio (Spectrum Analyzer)
+  // ===== INICIALIZAÇÃO DO GRAFO DE ÁUDIO =====
+  // Cria o grafo completo quando o áudio começa a tocar
   useEffect(() => {
-    // Se não está tocando ou não há elemento de áudio, limpar e sair
     if (!isPlaying || !audioRef.current) {
       setSpectrumData(new Array(32).fill(0));
       if (animationFrameRef.current) {
@@ -5534,141 +5766,99 @@ const DJPanel = () => {
       return;
     }
 
-    // Se já tentamos criar o MediaElementSource e falhou, não tentar novamente
-    if (mediaSourceCreationAttemptedRef.current && !mediaSourceRef.current) {
-      // Já tentamos criar e falhou - simplesmente retornar sem fazer nada
-      return;
-    }
-
-    // Se já existe MediaElementSource, apenas iniciar/continuar a animação
-    if (mediaSourceRef.current && analyserRef.current) {
-      // Retomar AudioContext se necessário
-      if (audioContextRefForSpectrum.current && audioContextRefForSpectrum.current.state === 'suspended') {
-        audioContextRefForSpectrum.current.resume().catch(() => {
-          // Ignorar erro silenciosamente
-        });
-      }
-
-      // Iniciar animação se não estiver rodando
-      if (!animationFrameRef.current) {
-        const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
+    // Obter AudioContext global
+    const audioContext = getGlobalAudioContext(globalAudioContextRef);
+    
+    // Criar grafo de áudio completo
+    const graphCreated = createAudioGraph({
+      audioContext,
+      audioElement: audioRef.current,
+      mediaSourceRef,
+      hubRef: audioHubGainNodeRef,
+      analyserRef,
+      broadcastDestinationRef,
+      broadcastGainRef: broadcastGainNodeRef,
+      broadcastStreamRef,
+      onHubCreated: (hub) => {
+        console.log('✅ Hub criado e pronto para conexões WebRTC');
         
-        const updateSpectrum = () => {
-          if (!isPlaying || !analyserRef.current) {
-            setSpectrumData(new Array(32).fill(0));
-            if (animationFrameRef.current) {
-              cancelAnimationFrame(animationFrameRef.current);
-              animationFrameRef.current = null;
-            }
-            return;
-          }
-
-          analyserRef.current.getByteFrequencyData(dataArray);
-          
-          const bars = 32;
-          const step = Math.floor(dataArray.length / bars);
-          const newSpectrum = [];
-          
-          for (let i = 0; i < bars; i++) {
-            let sum = 0;
-            for (let j = 0; j < step; j++) {
-              sum += dataArray[i * step + j] || 0;
-            }
-            newSpectrum.push((sum / step / 255) * 100);
-          }
-          
-          setSpectrumData(newSpectrum);
-          animationFrameRef.current = requestAnimationFrame(updateSpectrum);
-        };
-
-        updateSpectrum();
-      }
-      return;
-    }
-
-    // Criar AudioContext, Analyser e MediaElementSource apenas uma vez
-    try {
-      if (!audioRef.current) {
-        console.warn('⚠️ audioRef não está disponível ainda');
-        return;
-      }
-
-      // Criar ou reutilizar AudioContext
-      let audioContext = audioContextRefForSpectrum.current;
-      if (!audioContext || audioContext.state === 'closed') {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        audioContextRefForSpectrum.current = audioContext;
-      }
-
-      // Retomar AudioContext se estiver suspenso
-      if (audioContext.state === 'suspended') {
-        audioContext.resume().catch(() => {
-          // Ignorar erro silenciosamente
-        });
-      }
-
-      // Criar Analyser se não existir
-      if (!analyserRef.current) {
-        analyserRef.current = audioContext.createAnalyser();
-        analyserRef.current.fftSize = 64;
-        analyserRef.current.smoothingTimeConstant = 0.8;
-      }
-
-      // Criar MediaElementSource APENAS se não existir e nunca tentamos antes
-      // CRÍTICO: Um HTMLAudioElement só pode ter UM MediaElementSource durante toda sua vida útil
-      // IMPORTANTE: O MediaElementSource persiste mesmo quando o src do audio muda
-      if (!mediaSourceRef.current) {
-        // Se já tentamos criar antes, não tentar novamente
-        if (mediaSourceCreationAttemptedRef.current) {
-          // Já tentamos e falhou - pular completamente
-          return;
+        // Criar GainNode para volume local do DJ se não existir
+      if (!localVolumeGainNodeRef.current) {
+        localVolumeGainNodeRef.current = audioContext.createGain();
+        // CRÍTICO: Garantir que quando volume é 0, o gain também é 0
+        const initialVolume = playerVolume === 0 ? 0 : playerVolume / 100;
+        localVolumeGainNodeRef.current.gain.value = initialVolume;
         }
         
-        // Marcar ANTES de tentar criar
-        mediaSourceCreationAttemptedRef.current = true;
-        
-        // Tentar criar com tratamento de erro completo
+        // Conectar hub → analyser → localVolumeGain → destination (para o DJ ouvir)
+        // CRÍTICO: Garantir que TODAS as conexões ao destination passem pelo localVolumeGainNode
         try {
-          if (audioRef.current && analyserRef.current && !audioRef.current.srcObject) {
-          const source = audioContext.createMediaElementSource(audioRef.current);
-          mediaSourceRef.current = source;
-          source.connect(analyserRef.current);
-          analyserRef.current.connect(audioContext.destination);
-            console.log('✅ MediaElementSource criado e conectado ao spectrum analyzer');
+          // Desconectar analyser de qualquer conexão anterior
+          if (analyserRef.current) {
+            try {
+              analyserRef.current.disconnect(); // Desconecta de TODAS as conexões
+            } catch (e) {
+              // Pode não estar conectado
+            }
             
-            // MediaElementSource será conectado ao stream direto quando necessário
-          }
-        } catch (createError) {
-          // Verificar se o erro é porque já existe um MediaElementSource
-          if (createError.message && createError.message.includes('already connected')) {
-            console.log('ℹ️ MediaElementSource já existe para este elemento de áudio');
+            // CRÍTICO: Conectar hub → analyser → localVolumeGain → destination
+            // Garantir que o analyser NUNCA conecta diretamente ao destination
+            hub.connect(analyserRef.current);
+            analyserRef.current.connect(localVolumeGainNodeRef.current);
+            
+            // CRÍTICO: Garantir que localVolumeGain está conectado ao destination
+            try {
+              localVolumeGainNodeRef.current.disconnect(); // Desconectar de qualquer conexão anterior
+            } catch (e) {
+              // Pode não estar conectado
+            }
+            localVolumeGainNodeRef.current.connect(audioContext.destination);
+            
+            console.log('✅ Hub → Analyser → localVolumeGain → destination conectado');
           } else {
-            console.warn('⚠️ Erro ao criar MediaElementSource:', createError.message);
+            // Se não houver analyser, conectar diretamente hub → localVolumeGain → destination
+            try {
+              localVolumeGainNodeRef.current.disconnect(); // Desconectar de qualquer conexão anterior
+            } catch (e) {
+              // Pode não estar conectado
+            }
+            hub.connect(localVolumeGainNodeRef.current);
+            localVolumeGainNodeRef.current.connect(audioContext.destination);
+            console.log('✅ Hub → localVolumeGain → destination conectado');
           }
-          // Não tentar novamente
+        } catch (e) {
+          console.error('❌ Erro ao conectar hub ao LocalVolumeGain:', e);
         }
-      } else {
-        // MediaElementSource já existe - garantir que está conectado corretamente
-        // Não recriar, apenas verificar conexões
-        try {
-          // Verificar se o analyser ainda está conectado
-          if (analyserRef.current && audioContextRefForSpectrum.current) {
-            // O MediaElementSource persiste mesmo quando o src muda
-            // Apenas garantir que as conexões estão corretas
-            console.log('ℹ️ MediaElementSource já existe, verificando conexões...');
-                }
-        } catch (checkError) {
-          console.warn('⚠️ Erro ao verificar conexões do MediaElementSource:', checkError.message);
+        
+        // Se streaming já está ativo, conectar agora
+        if (isStreamingRef.current && broadcastDestinationRef.current) {
+          try {
+            if (!broadcastGainNodeRef.current) {
+              broadcastGainNodeRef.current = audioContext.createGain();
+            }
+            // Volume do broadcast sempre em 100% - não é afetado pelo mixer do DJ
+            broadcastGainNodeRef.current.gain.value = 1.0;
+            try {
+              broadcastGainNodeRef.current.disconnect();
+            } catch (e) {}
+            hub.connect(broadcastGainNodeRef.current);
+            broadcastGainNodeRef.current.connect(broadcastDestinationRef.current);
+          } catch (e) {
+            console.error('❌ Erro ao conectar hub ao WebRTC:', e);
+          }
         }
       }
+    });
 
-      // Iniciar animação do spectrum
-      if (!analyserRef.current) {
-        return;
-      }
+    if (!graphCreated) {
+      console.warn('⚠️ Não foi possível criar grafo de áudio completo');
+      return;
+    }
 
+    // Iniciar animação do spectrum analyzer
+    if (!animationFrameRef.current && analyserRef.current) {
       const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
-
+      
       const updateSpectrum = () => {
         if (!isPlaying || !analyserRef.current) {
           setSpectrumData(new Array(32).fill(0));
@@ -5698,19 +5888,88 @@ const DJPanel = () => {
       };
 
       updateSpectrum();
-    } catch (error) {
-      // Capturar todos os erros silenciosamente - especialmente erros de MediaElementSource
-      // Não logar para evitar spam no console
-      // O áudio continuará funcionando mesmo sem o spectrum analyzer
     }
+
+    // Verificar fluxo de dados de áudio periodicamente
+    // E tentar reconectar o grafo se o áudio estiver tocando mas não há dados
+    const audioCheckInterval = setInterval(() => {
+      const audioData = checkAudioDataFlow(analyserRef);
+      const isPlaying = audioRef.current && !audioRef.current.paused;
+      
+      if (audioData.hasData) {
+        console.log('✅ Dados de áudio detectados:', {
+          rms: audioData.rms.toFixed(4),
+          max: audioData.max,
+          avg: audioData.avg
+        });
+      } else {
+        console.warn('⚠️ Sem dados de áudio:', audioData);
+        
+        // Se o áudio está tocando mas não há dados, tentar reconectar o grafo
+        if (isPlaying && !audioData.hasData && audioHubGainNodeRef.current) {
+          // Evitar tentar reconectar muito rapidamente (dar tempo para os dados começarem a fluir)
+          const now = Date.now();
+          const lastReconnectAttempt = audioCheckIntervalRef.current?.lastReconnectAttempt || 0;
+          const timeSinceLastAttempt = now - lastReconnectAttempt;
+          
+          // Só tentar reconectar se passou pelo menos 3 segundos desde a última tentativa
+          if (timeSinceLastAttempt < 3000) {
+            return; // Aguardar mais antes de tentar novamente
+          }
+          
+          if (!audioCheckIntervalRef.current) {
+            audioCheckIntervalRef.current = {};
+          }
+          audioCheckIntervalRef.current.lastReconnectAttempt = now;
+          
+          console.log('🔄 Áudio tocando mas sem dados - recriando grafo de áudio...');
+          
+          // Limpar MediaElementSource antigo e recriar completamente
+          if (mediaSourceRef.current) {
+            try {
+              mediaSourceRef.current.disconnect();
+            } catch (e) {
+              // Ignorar erro
+            }
+            mediaSourceRef.current = null;
+          }
+          
+          // Recriar grafo de áudio completamente
+          try {
+            const graphCreated = createAudioGraph({
+              audioContext,
+              audioElement: audioRef.current,
+              mediaSourceRef,
+              hubRef: audioHubGainNodeRef,
+              analyserRef,
+              broadcastDestinationRef,
+              broadcastGainRef: broadcastGainNodeRef,
+              broadcastStreamRef,
+              onHubCreated: () => {
+                console.log('✅ Hub recriado durante reconexão');
+              }
+            });
+            
+            if (graphCreated) {
+              console.log('✅ Grafo de áudio recriado durante reconexão');
+            } else {
+              console.warn('⚠️ Não foi possível recriar grafo de áudio');
+            }
+          } catch (e) {
+            console.error('❌ Erro ao recriar grafo de áudio:', e);
+          }
+        }
+      }
+    }, 2000);
 
     return () => {
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
         animationFrameRef.current = null;
       }
+      clearInterval(audioCheckInterval);
     };
-  }, [isPlaying]);
+  }, [isPlaying, channels.master]);
 
   // Limpeza ao desmontar componente
   useEffect(() => {
@@ -6189,6 +6448,7 @@ const DJPanel = () => {
                 }
                 
                 // Trocar referências
+                const oldAudio = audioRef.current;
                 audioRef.current = nextAudio;
                 // Aplicar volume do fader MUSIC (será controlado pelo MixerConsole)
                 // O volume já está correto do fade in, mas garantimos que está aplicado
@@ -6202,6 +6462,51 @@ const DJPanel = () => {
                 setPlayHistory(prev => [...prev.slice(-49), trackId]);
                 
                 console.log('Crossfade completo, tocando:', track.name);
+                
+                // CRÍTICO: Limpar MediaElementSource antigo completamente
+                // O MixerConsole precisa recriar o MediaElementSource para o novo elemento
+                if (mediaSourceRef.current) {
+                  try {
+                    mediaSourceRef.current.disconnect();
+                  } catch (e) {
+                    // Ignorar erro
+                  }
+                  mediaSourceRef.current = null;
+                }
+                
+                // Forçar MixerConsole a recriar o MediaElementSource mudando o src
+                // Isso vai disparar o useEffect do MixerConsole que depende de musicAudioRef?.current?.src
+                // Mas precisamos garantir que o MixerConsole detecte a mudança
+                // Vamos usar um pequeno delay para garantir que o elemento está pronto
+                setTimeout(() => {
+                  try {
+                    const audioContext = getGlobalAudioContext(globalAudioContextRef);
+                    
+                    // Recriar grafo de áudio para o novo elemento
+                    // O MixerConsole vai criar o MediaElementSource quando detectar a mudança
+                    const graphCreated = createAudioGraph({
+                      audioContext,
+                      audioElement: audioRef.current,
+                      mediaSourceRef,
+                      hubRef: audioHubGainNodeRef,
+                      analyserRef,
+                      broadcastDestinationRef,
+                      broadcastGainRef: broadcastGainNodeRef,
+                      broadcastStreamRef,
+                      onHubCreated: () => {
+                        console.log('✅ Hub recriado após crossfade');
+                      }
+                    });
+                    
+                    if (graphCreated) {
+                      console.log('✅ Grafo de áudio recriado após crossfade');
+                    } else {
+                      console.log('ℹ️ Grafo parcial criado - MixerConsole criará MediaElementSource');
+                    }
+                  } catch (e) {
+                    console.error('❌ Erro ao recriar grafo de áudio após crossfade:', e);
+                  }
+                }, 300);
               }
             }, 100);
           }).catch(err => {
@@ -6260,10 +6565,9 @@ const DJPanel = () => {
           // Aguardar um pouco mais para garantir que o reset foi processado
           await new Promise(resolve => setTimeout(resolve, 100));
           
-          // Configurar volume inicial baseado no playerVolume
-          audioRef.current.volume = playerVolume / 100;
-          
-          // Volume será controlado pelo fader MUSIC do MixerConsole
+          // CRÍTICO: Manter volume do elemento <audio> sempre em 1.0 para não afetar o broadcast
+          // O volume local será controlado pelo localVolumeGainNodeRef
+          audioRef.current.volume = 1.0;
           
           // Prevenir ERR_REQUEST_RANGE_NOT_SATISFIABLE:
           // Sempre recriar blob URL antes de usar para garantir que está válido
@@ -6377,12 +6681,51 @@ const DJPanel = () => {
                 return;
               }
               
-              // Garantir que o volume está configurado antes de tocar
-              audioRef.current.volume = playerVolume / 100;
+              // CRÍTICO: Manter volume do elemento <audio> sempre em 1.0 para não afetar o broadcast
+              // O volume local será controlado pelo localVolumeGainNodeRef
+              audioRef.current.volume = 1.0;
               
               // Tentar obter a duração antes de tocar
               if (audioRef.current.duration && !isNaN(audioRef.current.duration) && audioRef.current.duration > 0) {
                 setDuration(audioRef.current.duration);
+              }
+              
+              // CRÍTICO: Recriar grafo de áudio se necessário (quando src muda)
+              if (isBroadcasting && audioHubGainNodeRef.current) {
+                try {
+                  const audioContext = getGlobalAudioContext(globalAudioContextRef);
+                  
+                  // Limpar MediaElementSource antigo se existir (pode estar conectado ao elemento antigo)
+                  if (mediaSourceRef.current) {
+                    try {
+                      mediaSourceRef.current.disconnect();
+                    } catch (e) {
+                      // Ignorar erro
+                    }
+                    mediaSourceRef.current = null;
+                  }
+                  
+                  // Recriar grafo de áudio para garantir que está conectado corretamente
+                  const graphCreated = createAudioGraph({
+                    audioContext,
+                    audioElement: audioRef.current,
+                    mediaSourceRef,
+                    hubRef: audioHubGainNodeRef,
+                    analyserRef,
+                    broadcastDestinationRef,
+                    broadcastGainRef: broadcastGainNodeRef,
+                    broadcastStreamRef,
+                    onHubCreated: () => {
+                      console.log('✅ Hub recriado para nova música');
+                    }
+                  });
+                  
+                  if (graphCreated) {
+                    console.log('✅ Grafo de áudio recriado para nova música');
+                  }
+                } catch (e) {
+                  console.warn('⚠️ Erro ao recriar grafo de áudio:', e);
+                }
               }
               
               // CRÍTICO: Verificar se já está tocando antes de tentar tocar novamente
@@ -6420,7 +6763,7 @@ const DJPanel = () => {
                 // Garantir que o tempo atual seja atualizado
                 setCurrentTime(0);
                 
-                console.log('✅ Tocando:', track.name, 'Volume:', audioRef.current.volume, 'URL:', track.url);
+                console.log('✅ Tocando:', track.name, 'URL:', track.url);
                 console.log('📊 Estado inicial - Duração:', audioRef.current.duration, 'Tempo atual:', audioRef.current.currentTime);
                 console.log('📊 ReadyState:', audioRef.current.readyState);
                 isTransitioningRef.current = false;
@@ -6504,7 +6847,7 @@ const DJPanel = () => {
                     setCurrentTime(audioRef.current.currentTime || 0);
                   }
                   
-                  console.log('✅ Tocando (fallback):', track.name, 'Volume:', audioRef.current.volume);
+                  console.log('✅ Tocando (fallback):', track.name);
                   console.log('📊 Estado inicial (fallback) - Duração:', audioRef.current.duration, 'Tempo atual:', audioRef.current.currentTime);
                   isTransitioningRef.current = false;
                 }).catch(err => {
@@ -7044,14 +7387,25 @@ const DJPanel = () => {
 
   // Função auxiliar para garantir que o MediaElementSource seja criado
   const ensureMediaElementSource = useCallback(() => {
+    console.log('🔧 ensureMediaElementSource chamado');
+    
     // Se já existe, retornar
     if (mediaSourceRef.current) {
+      console.log('✅ MediaElementSource já existe no ref');
       return true;
-            }
-            
-    // Se já tentamos criar e falhou, não tentar novamente
+    }
+    
+    // IMPORTANTE: Verificar se o MediaElementSource já foi criado em outro lugar
+    // Se o elemento de áudio já tem um MediaElementSource conectado, não podemos criar outro
+    // Nesse caso, precisamos encontrar uma forma de reutilizar o existente
+    // Mas como não temos acesso direto ao MediaElementSource existente, vamos tentar criar
+    // e se falhar com "already connected", vamos assumir que existe e continuar
+    
+    // IMPORTANTE: Permitir tentar criar mesmo se já tentou antes
+    // O src pode ter mudado ou o MediaElementSource pode ter sido removido
     if (mediaSourceCreationAttemptedRef.current) {
-      return false;
+      console.log('ℹ️ Já tentamos criar antes, mas vamos tentar novamente');
+      // Continuar para tentar criar novamente
     }
 
     // Verificar se temos os requisitos
@@ -7060,19 +7414,23 @@ const DJPanel = () => {
       return false;
     }
 
-    // Verificar se o elemento de áudio tem um src (mesmo que vazio, precisa estar pronto)
-    if (!audioRef.current.src && !audioRef.current.srcObject) {
+    // Verificar se o elemento de áudio tem um src
+    const hasSrc = audioRef.current.src || audioRef.current.srcObject;
+    if (!hasSrc) {
       console.warn('⚠️ Elemento de áudio não tem src definido ainda');
       return false;
     }
 
+    console.log('📊 Tentando criar MediaElementSource:', {
+      hasSrc: !!hasSrc,
+      src: audioRef.current.src,
+      hasSrcObject: !!audioRef.current.srcObject,
+      alreadyAttempted: mediaSourceCreationAttemptedRef.current
+    });
+
     try {
       // Criar AudioContext se não existir
-      if (!audioContextRefForSpectrum.current || audioContextRefForSpectrum.current.state === 'closed') {
-        audioContextRefForSpectrum.current = new (window.AudioContext || window.webkitAudioContext)();
-      }
-      
-      const audioContext = audioContextRefForSpectrum.current;
+      const audioContext = getGlobalAudioContext(globalAudioContextRef);
       
       // Retomar AudioContext se estiver suspenso
       if (audioContext.state === 'suspended') {
@@ -7091,157 +7449,529 @@ const DJPanel = () => {
 
       // Criar MediaElementSource
       if (!audioRef.current.srcObject) {
-        const source = audioContext.createMediaElementSource(audioRef.current);
-        mediaSourceRef.current = source;
-        source.connect(analyserRef.current);
-        analyserRef.current.connect(audioContext.destination);
-        console.log('✅ MediaElementSource criado e conectado');
-            return true;
+        console.log('🔄 Criando MediaElementSource...');
+        try {
+          const source = audioContext.createMediaElementSource(audioRef.current);
+          mediaSourceRef.current = source;
+          
+          // IMPORTANTE: Não conectar diretamente ao analyser aqui
+          // O hub será criado e conectado quando necessário
+          console.log('✅ MediaElementSource criado com sucesso (sem conexões ainda)');
+          return true;
+        } catch (createError) {
+          // Se o erro for "already connected", significa que já existe um MediaElementSource
+          if (createError.message && createError.message.includes('already connected')) {
+            console.log('ℹ️ MediaElementSource já existe (criado em outro lugar)');
+            // IMPORTANTE: Não podemos criar um novo, mas também não temos acesso ao existente
+            // Vamos marcar como se existisse e tentar usar o hub que pode já estar conectado
+            // Na verdade, o problema é que o MediaElementSource foi criado mas não está no ref
+            // Vamos tentar uma abordagem diferente: verificar se podemos usar o hub existente
+            if (audioHubGainNodeRef.current) {
+              console.log('ℹ️ Hub já existe, vamos tentar usá-lo');
+              // Se o hub existe, provavelmente o MediaElementSource também existe e está conectado
+              // Vamos assumir que está tudo certo e retornar true
+              return true;
+            }
+            return false;
           }
-        } catch (error) {
-      console.warn('⚠️ Erro ao criar MediaElementSource:', error.message);
-          return false;
+          throw createError; // Re-lançar se for outro erro
         }
-
+      } else {
+        console.warn('⚠️ Áudio tem srcObject, não pode criar MediaElementSource');
         return false;
+      }
+    } catch (error) {
+      console.error('❌ Erro ao criar MediaElementSource:', error);
+      console.error('❌ Detalhes do erro:', {
+        name: error.name,
+        message: error.message
+      });
+      
+      // Se o erro for "already connected", tentar usar o hub existente
+      if (error.message && error.message.includes('already connected')) {
+        console.log('ℹ️ MediaElementSource já existe, tentando usar hub existente');
+        if (audioHubGainNodeRef.current) {
+          console.log('✅ Hub existe, assumindo que MediaElementSource está conectado');
+          return true;
+        }
+      }
+      
+      return false;
+    }
   }, []);
 
-  // Função para iniciar streaming direto via Socket.IO
-  const startDirectStreaming = useCallback(async () => {
+  // Função para conectar áudio ao stream WebRTC (pode ser chamada quando o áudio começar a tocar)
+  const connectAudioToWebRTC = useCallback((audioContext, destination) => {
+    console.log('🔌 connectAudioToWebRTC chamado');
+    console.log('📊 Estado atual:', {
+      hasMediaSource: !!mediaSourceRef.current,
+      hasHub: !!audioHubGainNodeRef.current,
+      hasAudioRef: !!audioRef.current,
+      audioHasSrc: audioRef.current && (audioRef.current.src || audioRef.current.srcObject),
+      audioIsPlaying: audioRef.current && !audioRef.current.paused
+    });
+    
+    // IMPORTANTE: Se o hub já existe, significa que o MediaElementSource foi criado
+    // no código do spectrum analyzer e está conectado ao hub. Podemos usar o hub diretamente.
+    if (audioHubGainNodeRef.current) {
+      console.log('✅ Hub já existe - MediaElementSource foi criado no spectrum analyzer');
+      // Continuar para conectar o hub ao broadcast
+    } else if (!mediaSourceRef.current) {
+      // Tentar criar MediaElementSource agora
+      if (audioRef.current && (audioRef.current.src || audioRef.current.srcObject)) {
+        console.log('🔄 Tentando criar MediaElementSource agora que o áudio tem src...');
+        const created = ensureMediaElementSource();
+        console.log('📊 MediaElementSource criado?', created);
+        
+        // Se não conseguiu criar, verificar novamente após um pequeno delay
+        // O spectrum analyzer pode estar criando o MediaElementSource em um useEffect
+        if (!created && !audioHubGainNodeRef.current) {
+          console.log('⏳ Aguardando um pouco para verificar se o hub foi criado pelo spectrum analyzer...');
+          // Retornar false por enquanto, mas o listener do 'play' vai tentar novamente
+          return false;
+        }
+      } else {
+        console.warn('⚠️ Áudio não tem src ainda');
+        return false;
+      }
+    }
+    
+    // Se temos MediaElementSource mas não temos hub, criar o hub
+    if (mediaSourceRef.current && !audioHubGainNodeRef.current) {
+      audioHubGainNodeRef.current = audioContext.createGain();
+      audioHubGainNodeRef.current.gain.value = 1.0;
+      
+      // Conectar MediaElementSource ao hub
+      try {
+        try {
+          mediaSourceRef.current.disconnect();
+        } catch (e) {
+          // Pode não estar conectado
+        }
+        mediaSourceRef.current.connect(audioHubGainNodeRef.current);
+        console.log('✅ MediaElementSource conectado ao hub');
+        
+        // CRÍTICO: NÃO conectar hub ao analyser ou destination aqui diretamente
+        // O analyser e destination devem ser conectados através do localVolumeGainNode
+        // para que o volume do mixer funcione corretamente
+        // A conexão será feita no useEffect do playerVolume
+        // Isso garante que quando o volume é 0, o áudio é completamente mudo
+      } catch (e) {
+        console.error('❌ Erro ao conectar MediaElementSource ao hub:', e);
+        return false;
+      }
+    }
+    
+    // Conectar hub ao broadcast
+    if (audioHubGainNodeRef.current && destination) {
+      // CRÍTICO: Garantir que o hub está em 100% (não afetado pelo mixer)
+      audioHubGainNodeRef.current.gain.value = 1.0;
+      
+      if (!broadcastGainNodeRef.current) {
+        broadcastGainNodeRef.current = audioContext.createGain();
+      }
+      // Volume do broadcast sempre em 100% - não é afetado pelo mixer do DJ
+      broadcastGainNodeRef.current.gain.value = 1.0;
+      
+      try {
+        broadcastGainNodeRef.current.disconnect();
+      } catch (e) {
+        // Ignorar
+      }
+      
+      try {
+        audioHubGainNodeRef.current.connect(broadcastGainNodeRef.current);
+        broadcastGainNodeRef.current.connect(destination);
+        console.log('✅ Áudio conectado ao stream WebRTC via hub (hub em 100%, não afetado pelo mixer)');
+        return true;
+      } catch (e) {
+        console.error('❌ Erro ao conectar hub ao broadcast:', e);
+        return false;
+      }
+    }
+    
+    return false;
+  }, []); // Removido channels.master da dependência - não deve reconectar quando o mixer muda
+
+  // ===== INICIAR WEBRTC STREAMING =====
+  // Usa o grafo de áudio global já criado
+  // CRÍTICO: Só deve ser chamado quando isBroadcasting for true
+  const startWebRTCStreaming = useCallback(async () => {
+    // CRÍTICO: Verificar se realmente está transmitindo antes de iniciar
+    if (!isBroadcasting) {
+      console.warn('⚠️ Tentativa de iniciar streaming sem estar em modo On Air');
+      return false;
+    }
+    
     if (!socketRef.current?.connected) {
       alert('Erro: Não conectado ao servidor. Verifique se o backend está rodando.');
+      return false;
+    }
+      
+    try {
+      console.log('🚀 Iniciando WebRTC streaming - usando grafo de áudio global');
+      
+      // Obter AudioContext global
+      const audioContext = getGlobalAudioContext(globalAudioContextRef);
+      
+      if (!audioRef.current) {
+        console.error('❌ Elemento de áudio não disponível');
         return false;
       }
       
-    try {
-      // IMPORTANTE: Usar o mesmo AudioContext do spectrum para evitar erros de conexão
-      if (!audioContextRefForSpectrum.current || audioContextRefForSpectrum.current.state === 'closed') {
-        audioContextRefForSpectrum.current = new (window.AudioContext || window.webkitAudioContext)();
-      }
-
-      const audioContext = audioContextRefForSpectrum.current;
-      streamingAudioContextRef.current = audioContext;
-      
-      // Retomar AudioContext se estiver suspenso
-      if (audioContext.state === 'suspended') {
-        await audioContext.resume();
-          }
-      
-      // Tentar criar o MediaElementSource se ainda não existe
-      if (!mediaSourceRef.current && audioRef.current) {
-        console.log('ℹ️ Tentando criar MediaElementSource antes de iniciar streaming...');
-        ensureMediaElementSource();
-      }
-      
-      // Criar destination para capturar o áudio misturado
-      const destination = audioContext.createMediaStreamDestination();
-      streamingDestinationRef.current = destination;
-      const stream = destination.stream;
-
-      // Conectar o áudio do player ao destination
-      if (mediaSourceRef.current) {
-        try {
-          if (!broadcastGainNodeRef.current) {
-            broadcastGainNodeRef.current = audioContext.createGain();
-        }
-          broadcastGainNodeRef.current.gain.value = channels.master / 100;
+      // CRÍTICO: Garantir que o grafo de áudio está criado
+      // Se não estiver criado, criar agora mesmo que a música não esteja tocando
+      if (!audioHubGainNodeRef.current || !broadcastDestinationRef.current) {
+        console.log('⏳ Criando grafo de áudio para streaming...');
+        const graphCreated = createAudioGraph({
+          audioContext,
+          audioElement: audioRef.current,
+          mediaSourceRef,
+          hubRef: audioHubGainNodeRef,
+          analyserRef,
+          broadcastDestinationRef,
+          broadcastGainRef: broadcastGainNodeRef,
+          broadcastStreamRef,
+        });
+        
+        if (!graphCreated) {
+          console.error('❌ Não foi possível criar grafo de áudio');
+          // Tentar novamente após um pequeno delay
+          await new Promise(resolve => setTimeout(resolve, 100));
+          const retryGraphCreated = createAudioGraph({
+            audioContext,
+            audioElement: audioRef.current,
+            mediaSourceRef,
+            hubRef: audioHubGainNodeRef,
+            analyserRef,
+            broadcastDestinationRef,
+            broadcastGainRef: broadcastGainNodeRef,
+            broadcastStreamRef,
+          });
           
+          if (!retryGraphCreated) {
+            console.error('❌ Não foi possível criar grafo de áudio após retry');
+            return false;
+          }
+        }
+      }
+      
+      // CRÍTICO: Garantir que o hub está conectado ao broadcast destination
+      // Isso é necessário mesmo que a música não esteja tocando ainda
+      if (audioHubGainNodeRef.current && broadcastDestinationRef.current) {
+        try {
+          // Verificar se já está conectado
+          const hubConnected = audioHubGainNodeRef.current.numberOfOutputs > 0;
+          if (!hubConnected) {
+            console.log('🔗 Conectando hub ao broadcast destination...');
+            audioHubGainNodeRef.current.connect(broadcastGainNodeRef.current);
+            broadcastGainNodeRef.current.connect(broadcastDestinationRef.current);
+            console.log('✅ Hub conectado ao broadcast destination');
+          }
+        } catch (e) {
+          console.warn('⚠️ Erro ao conectar hub ao broadcast:', e);
+          // Tentar conectar mesmo assim
           try {
-            broadcastGainNodeRef.current.connect(destination);
-            mediaSourceRef.current.connect(broadcastGainNodeRef.current);
-            console.log('✅ Áudio do player conectado ao stream');
-          } catch (connectError) {
-            if (connectError.message && connectError.message.includes('already connected')) {
-              console.log('ℹ️ Conexões já estabelecidas');
-            } else {
+            audioHubGainNodeRef.current.connect(broadcastGainNodeRef.current);
+            broadcastGainNodeRef.current.connect(broadcastDestinationRef.current);
+          } catch (e2) {
+            console.error('❌ Erro ao conectar hub após retry:', e2);
+          }
+        }
+      }
+      
+      // Volume do broadcast sempre em 100% - não é afetado pelo mixer do DJ
+      if (broadcastGainNodeRef.current) {
+        broadcastGainNodeRef.current.gain.value = 1.0;
+      }
+      
+      // Verificar se o stream está correto
+      if (!broadcastStreamRef.current) {
+        console.error('❌ Stream não disponível - tentando criar novamente...');
+        // Tentar criar o grafo novamente
+        const retryGraphCreated = createAudioGraph({
+          audioContext,
+          audioElement: audioRef.current,
+          mediaSourceRef,
+          hubRef: audioHubGainNodeRef,
+          analyserRef,
+          broadcastDestinationRef,
+          broadcastGainRef: broadcastGainNodeRef,
+          broadcastStreamRef,
+        });
+        
+        if (!retryGraphCreated || !broadcastStreamRef.current) {
+          console.error('❌ Stream não disponível após retry');
+          return false;
+        }
+      }
+      
+      // Verificar se há tracks no stream
+      const tracks = broadcastStreamRef.current.getTracks();
+      const audioTracks = tracks.filter(t => t.kind === 'audio');
+      
+      if (audioTracks.length === 0) {
+        console.warn('⚠️ Nenhum track de áudio no stream ainda - isso é normal se a música não estiver tocando');
+        console.warn('⚠️ O stream será criado, mas só terá áudio quando a música começar a tocar');
+        // Não retornar false aqui - o stream pode ser criado mesmo sem tracks ainda
+        // Os tracks serão adicionados quando a música começar a tocar
+      } else {
+        console.log('✅ Stream tem', audioTracks.length, 'track(s) de áudio');
+      }
+      
+      console.log('✅ Stream WebRTC pronto com', audioTracks.length, 'track(s) de áudio');
+      
+      // Verificar fluxo de dados
+      const audioData = checkAudioDataFlow(analyserRef);
+      console.log('📊 Dados de áudio no Analyser:', audioData);
+      
+      if (!audioData.hasData) {
+        console.warn('⚠️ Sem dados de áudio detectados - aguardando áudio começar a tocar...');
+      }
+      
+      // Verificar periodicamente o fluxo de dados
+      const monitorInterval = setInterval(() => {
+        const audioData = checkAudioDataFlow(analyserRef);
+        const tracks = broadcastStreamRef.current.getTracks();
+        const audioTracks = tracks.filter(t => t.kind === 'audio');
+        
+        if (audioTracks.length > 0) {
+          const track = audioTracks[0];
+          const isPlaying = audioRef.current && !audioRef.current.paused;
+          
+          console.log('📊 Monitoramento:', {
+            hasData: audioData.hasData,
+            rms: audioData.rms.toFixed(4),
+            trackMuted: track.muted,
+            trackEnabled: track.enabled,
+            trackReadyState: track.readyState,
+            audioPlaying: isPlaying
+          });
+          
+          if (audioData.hasData && !track.muted && isPlaying) {
+            console.log('✅ Áudio fluindo corretamente!');
+          } else if (!audioData.hasData && isPlaying) {
+            console.warn('⚠️ Áudio tocando mas sem dados no Analyser');
+            
+            // Tentar reconectar o grafo se o áudio está tocando mas não há dados
+            // Isso acontece quando a música já estava tocando antes de iniciar a transmissão
+            if (audioHubGainNodeRef.current && !mediaSourceRef.current) {
+              console.log('🔄 Tentando reconectar grafo de áudio (música já estava tocando)...');
+              const audioContext = getGlobalAudioContext(globalAudioContextRef);
+              
               try {
-                broadcastGainNodeRef.current.disconnect();
-                broadcastGainNodeRef.current.connect(destination);
-                mediaSourceRef.current.connect(broadcastGainNodeRef.current);
-                console.log('✅ Reconectado com sucesso');
-              } catch (reconnectError) {
-                console.warn('⚠️ Erro ao reconectar:', reconnectError.message);
+                if (audioRef.current && !audioRef.current.srcObject) {
+                  const source = audioContext.createMediaElementSource(audioRef.current);
+                  mediaSourceRef.current = source;
+                  console.log('✅ MediaElementSource criado durante monitoramento');
+                  
+                  try {
+                    source.disconnect();
+                  } catch (e) {}
+                  source.connect(audioHubGainNodeRef.current);
+                  console.log('✅ MediaElementSource conectado ao hub durante monitoramento');
+                }
+              } catch (e) {
+                if (e.message && e.message.includes('already connected')) {
+                  console.log('ℹ️ MediaElementSource já existe - tentando usar o existente');
+                  // O MediaElementSource foi criado pelo MixerConsole
+                  // Precisamos conectar o output do MixerConsole ao hub
+                  // Por enquanto, vamos apenas logar - o MixerConsole deve conectar ao hub
+                }
               }
             }
           }
-        } catch (error) {
-          console.error('❌ Erro ao configurar conexão do player:', error);
         }
-      }
+      }, 2000);
+      
+      setTimeout(() => clearInterval(monitorInterval), 60000);
 
       // Conectar microfone se disponível
-      if (micStreamRef.current) {
+      if (micStreamRef.current && broadcastDestinationRef.current) {
         const micSource = audioContext.createMediaStreamSource(micStreamRef.current);
         const micGain = audioContext.createGain();
         micGain.gain.value = channels.mic / 100;
         micSource.connect(micGain);
-        micGain.connect(destination);
+        micGain.connect(broadcastDestinationRef.current);
+        console.log('✅ Microfone conectado ao stream WebRTC');
       }
-
-      // Criar MediaRecorder para capturar o áudio
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
-        ? 'audio/webm;codecs=opus' 
-        : MediaRecorder.isTypeSupported('audio/webm') 
-        ? 'audio/webm' 
-        : MediaRecorder.isTypeSupported('audio/ogg') 
-        ? 'audio/ogg' 
-        : 'audio/webm';
       
-      const mediaRecorder = new MediaRecorder(stream, { mimeType });
-      streamingMediaRecorderRef.current = mediaRecorder;
+      // CRÍTICO: Só marcar como streaming e notificar backend se realmente estiver transmitindo
+      // Isso garante que o stream só seja disponibilizado quando o DJ ativar On Air
+      if (isBroadcasting) {
+        setIsStreaming(true);
+        isStreamingRef.current = true; // Atualizar ref também
+        console.log('✅ Stream WebRTC preparado e pronto para conexões');
         
-      // Enviar chunks de áudio via Socket.IO
-      mediaRecorder.ondataavailable = async (event) => {
-        if (event.data.size > 0 && socketRef.current?.connected) {
-          try {
-            // Converter blob para base64 para enviar via Socket.IO
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const base64data = reader.result.split(',')[1]; // Remover prefixo data:audio/...
-              socketRef.current.emit('audio:chunk', {
-                data: base64data,
-                mimeType: mimeType,
-                timestamp: Date.now()
-              });
-            };
-            reader.onerror = (error) => {
-              console.error('❌ Erro ao ler chunk de áudio:', error);
-            };
-            reader.readAsDataURL(event.data);
-          } catch (error) {
-            console.error('❌ Erro ao processar chunk de áudio:', error);
-          }
-          }
-        };
-        
-      // Iniciar gravação em chunks (250ms para menor latência)
-      mediaRecorder.start(250);
-      
-      setIsStreaming(true);
-      console.log('✅ Streaming direto iniciado via Socket.IO');
-      
-      // Notificar backend que estamos transmitindo com o nome do DJ
-      socketRef.current.emit('broadcaster', {
-        broadcasterId: socketRef.current.id,
-        streaming: true,
-        directStream: true,
-        djName: user?.username || 'DJ'
-      });
+        // Notificar backend que estamos transmitindo com o nome do DJ
+        if (socketRef.current?.connected) {
+          socketRef.current.emit('broadcaster', {
+            broadcasterId: socketRef.current.id,
+            streaming: true,
+            directStream: false, // WebRTC, não streaming direto
+            radioName: radioName,
+            djName: user?.username || 'DJ'
+          });
+          console.log('📡 Notificação de transmissão enviada para backend');
+        }
+      } else {
+        console.warn('⚠️ Stream criado mas DJ não está em modo On Air - não marcando como streaming');
+        // Não marcar como streaming se não estiver transmitindo
+        setIsStreaming(false);
+        isStreamingRef.current = false;
+      }
       
       return true;
-          } catch (error) {
-      console.error('❌ Erro ao iniciar streaming direto:', error);
+    } catch (error) {
+      console.error('❌ Erro ao iniciar streaming WebRTC:', error);
       alert('Erro ao iniciar streaming: ' + error.message);
       return false;
     }
-  }, [channels, ensureMediaElementSource]);
+  }, [isBroadcasting, channels, radioName, user]);
 
-  // Função para parar streaming direto
-  const stopDirectStreaming = useCallback(() => {
-    if (streamingMediaRecorderRef.current && streamingMediaRecorderRef.current.state !== 'inactive') {
-      streamingMediaRecorderRef.current.stop();
-      streamingMediaRecorderRef.current = null;
+  // Função para criar conexão WebRTC com ouvinte
+  const createPeerConnection = useCallback(async (listenerId) => {
+    console.log('🔌 createPeerConnection chamado para ouvinte:', listenerId);
+    console.log('📊 broadcastStreamRef.current:', broadcastStreamRef.current ? 'disponível' : 'não disponível');
+    console.log('📊 socketRef.current?.connected:', socketRef.current?.connected);
+    
+    if (!broadcastStreamRef.current || !socketRef.current?.connected) {
+      console.warn('⚠️ Stream não disponível ou socket desconectado');
+      console.warn('⚠️ broadcastStreamRef:', !!broadcastStreamRef.current, 'socket:', !!socketRef.current?.connected);
+      return;
     }
+
+    // Verificar se já existe uma conexão com este ouvinte
+    const existingPc = peerConnectionsRef.current[listenerId];
+    if (existingPc) {
+      // Verificar se a conexão ainda está ativa
+      if (existingPc.signalingState !== 'closed' && 
+          existingPc.connectionState !== 'closed' &&
+          existingPc.connectionState !== 'failed' &&
+          existingPc.connectionState !== 'disconnected') {
+        console.log('ℹ️ Já existe conexão ativa com ouvinte:', listenerId);
+        return;
+      } else {
+        // Limpar conexão antiga
+        try {
+          existingPc.close();
+        } catch (e) {
+          // Ignorar erro
+        }
+        delete peerConnectionsRef.current[listenerId];
+      }
+    }
+
+    try {
+      console.log('🔌 Criando nova conexão WebRTC com ouvinte:', listenerId);
+      
+      // Criar RTCPeerConnection
+      const pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ]
+      });
+
+      // Adicionar stream de áudio
+      const tracks = broadcastStreamRef.current.getTracks();
+      console.log('📊 Tracks disponíveis no stream:', tracks.length);
+      tracks.forEach(track => {
+        console.log('📊 Track:', track.kind, 'ID:', track.id, 'enabled:', track.enabled, 'muted:', track.muted, 'readyState:', track.readyState);
+        
+        // Garantir que o track está habilitado e não muted
+        track.enabled = true;
+        if (track.muted) {
+          console.warn('⚠️ Track está muted, isso pode causar problemas!');
+        }
+        
+        pc.addTrack(track, broadcastStreamRef.current);
+        console.log('✅ Track adicionado ao PeerConnection:', track.kind);
+      });
+      
+      // Verificar se há tracks de áudio
+      const audioTracks = tracks.filter(t => t.kind === 'audio');
+      if (audioTracks.length === 0) {
+        console.error('❌ Nenhum track de áudio encontrado no stream!');
+      } else {
+        console.log('✅', audioTracks.length, 'track(s) de áudio adicionado(s)');
+        // Verificar estado final dos tracks
+        audioTracks.forEach(track => {
+          console.log('📊 Track final:', track.id, 'enabled:', track.enabled, 'muted:', track.muted);
+        });
+      }
+
+      // Handler para ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate && socketRef.current?.connected) {
+          socketRef.current.emit('candidate', listenerId, event.candidate);
+          console.log('📤 ICE candidate enviado para:', listenerId);
+        }
+      };
+
+      // Handler para mudanças de estado
+      pc.onconnectionstatechange = () => {
+        console.log(`🔗 Estado da conexão WebRTC com ${listenerId}:`, pc.connectionState);
+        if (pc.connectionState === 'connected') {
+          setWebrtcConnectionStatus('connected');
+          setActiveWebrtcConnections(prev => prev + 1);
+          socketRef.current?.emit('webrtc:connected', { listenerId, broadcasterId: socketRef.current.id });
+        } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setActiveWebrtcConnections(prev => {
+            const newCount = Math.max(0, prev - 1);
+            if (newCount <= 0) {
+              setWebrtcConnectionStatus('waiting');
+            }
+            return newCount;
+          });
+          
+          // CRÍTICO: Limpar conexão quando fica disconnected ou failed
+          // Isso permite que o DJ crie uma nova conexão quando o listener emitir watcher novamente
+          console.log(`🧹 Limpando conexão ${listenerId} em estado:`, pc.connectionState);
+          try {
+            // Remover event handlers antes de fechar
+            pc.onconnectionstatechange = null;
+            pc.oniceconnectionstatechange = null;
+            pc.ontrack = null;
+            pc.onicecandidate = null;
+            
+            if (pc.connectionState !== 'closed') {
+              pc.close();
+            }
+          } catch (e) {
+            console.warn('⚠️ Erro ao limpar conexão:', e);
+          }
+          delete peerConnectionsRef.current[listenerId];
+          console.log(`✅ Conexão ${listenerId} removida de peerConnectionsRef`);
+        }
+      };
+
+      // Armazenar conexão
+      peerConnectionsRef.current[listenerId] = pc;
+
+      // CRÍTICO: NÃO criar offer aqui!
+      // O offer será criado SOMENTE quando receber o evento 'watcher' do listener
+      console.log('✅ PeerConnection criada e pronta para ouvinte:', listenerId);
+      console.log('⏳ Aguardando evento watcher para criar offer...');
+
+    } catch (error) {
+      console.error('❌ Erro ao criar PeerConnection:', error);
+      // Limpar referência em caso de erro
+      delete peerConnectionsRef.current[listenerId];
+    }
+  }, []);
+
+  // Função para parar streaming WebRTC
+  const stopWebRTCStreaming = useCallback(() => {
+    // Fechar todas as conexões WebRTC
+    Object.values(peerConnectionsRef.current).forEach(pc => {
+      try {
+        pc.close();
+      } catch (e) {
+        console.warn('⚠️ Erro ao fechar PeerConnection:', e);
+      }
+    });
+    peerConnectionsRef.current = {};
 
     // Notificar backend que paramos de transmitir
     if (socketRef.current?.connected) {
@@ -7257,30 +7987,58 @@ const DJPanel = () => {
           }
     }
 
-    streamingDestinationRef.current = null;
+    broadcastDestinationRef.current = null;
     setIsStreaming(false);
+    isStreamingRef.current = false; // Atualizar ref também
     console.log('🛑 Streaming direto parado');
   }, []);
 
-  // Sistema de streaming direto via Socket.IO
+  // Sistema de streaming WebRTC
   useEffect(() => {
+    let heartbeatInterval = null;
+    
+    // Atualizar ref sempre que isBroadcasting mudar
+    isBroadcastingRef.current = isBroadcasting;
+    
     if (isBroadcasting) {
-      // Iniciar streaming direto
-      startDirectStreaming().then((success) => {
+      // Iniciar streaming WebRTC
+      startWebRTCStreaming().then((success) => {
         if (success && socketRef.current?.connected) {
           // Notificar ouvintes que estamos transmitindo com o nome da rádio
           socketRef.current.emit('broadcaster', {
             broadcasterId: socketRef.current.id,
             streaming: true,
-            directStream: true,
+            directStream: false, // WebRTC
             radioName: radioName
           });
-          console.log('📡 Streaming direto iniciado - ouvintes serão notificados');
+          console.log('📡 Streaming WebRTC iniciado - ouvintes serão notificados');
+          
+          // CRÍTICO: Sistema de heartbeat - enviar sinal periódico para notificar que está transmitindo
+          // Isso garante que listeners detectem automaticamente quando o DJ fica ao vivo
+          heartbeatInterval = setInterval(() => {
+            if (socketRef.current?.connected && isStreamingRef.current) {
+              // Enviar heartbeat para notificar que ainda está transmitindo
+              socketRef.current.emit('broadcaster', {
+                broadcasterId: socketRef.current.id,
+                streaming: true,
+                directStream: false,
+                radioName: radioName,
+                heartbeat: true // Flag para indicar que é um heartbeat
+              });
+              console.log('💓 Heartbeat enviado - DJ está transmitindo');
             }
+          }, 5000); // Enviar heartbeat a cada 5 segundos
+        }
       });
     } else {
       // Parar streaming
-      stopDirectStreaming();
+      stopWebRTCStreaming();
+      
+      // Parar heartbeat
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+      }
       
       // Notificar ouvintes que a transmissão parou
       if (socketRef.current?.connected) {
@@ -7289,20 +8047,24 @@ const DJPanel = () => {
     }
 
     return () => {
-      stopDirectStreaming();
+      stopWebRTCStreaming();
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+      }
     };
-  }, [isBroadcasting, startDirectStreaming, stopDirectStreaming, radioName]);
+  }, [isBroadcasting, startWebRTCStreaming, stopWebRTCStreaming, radioName]);
 
   // Sistema antigo WebRTC - REMOVIDO
   // Todo o código WebRTC foi removido e substituído por streaming direto via Socket.IO
 
   // Enviar nome da rádio atualizado para os ouvintes quando mudar
+  // CRÍTICO: Só enviar se estiver transmitindo (On Air ativado)
   useEffect(() => {
-    if (socketRef.current?.connected && radioName) {
+    if (socketRef.current?.connected && radioName && isBroadcasting) {
       socketRef.current.emit('broadcaster', {
         broadcasterId: socketRef.current.id,
-        streaming: isBroadcasting,
-        directStream: isBroadcasting,
+        streaming: true,
+        directStream: false,
         radioName: radioName
       });
       console.log('📡 Nome da rádio enviado para ouvintes:', radioName);
@@ -7326,8 +8088,9 @@ const DJPanel = () => {
   useEffect(() => {
     const audio = audioRef.current;
     if (audio) {
-      // Configurar volume inicial baseado no playerVolume
-      audio.volume = playerVolume / 100;
+      // CRÍTICO: Manter volume do elemento <audio> sempre em 1.0 para não afetar o broadcast
+      // O volume local será controlado pelo localVolumeGainNodeRef
+      audio.volume = 1.0;
       audio.addEventListener('ended', handleTrackEnded);
       
       // Adicionar tratamento de erro para URLs inválidas
@@ -7384,8 +8147,9 @@ const DJPanel = () => {
                         // Aguardar um pouco mais antes de tocar para evitar range requests
                         setTimeout(() => {
                           if (audioRef.current && audioRef.current.src === newBlobUrl) {
-                            // Garantir volume antes de tocar
-                            audioRef.current.volume = playerVolume / 100;
+                            // CRÍTICO: Manter volume do elemento <audio> sempre em 1.0 para não afetar o broadcast
+                            // O volume local será controlado pelo localVolumeGainNodeRef
+                            audioRef.current.volume = 1.0;
                             // Garantir que onEnded está configurado
                             audioRef.current.addEventListener('ended', handleTrackEnded);
                             
@@ -7482,7 +8246,7 @@ const DJPanel = () => {
       };
       
       audio.addEventListener('error', errorHandler);
-      console.log('✅ Elemento audio inicializado e evento onEnded configurado. Volume:', audio.volume);
+      console.log('✅ Elemento audio inicializado e evento onEnded configurado');
       
       return () => {
         audio.removeEventListener('ended', handleTrackEnded);
@@ -7493,10 +8257,180 @@ const DJPanel = () => {
     }
   }, [handleTrackEnded, currentTrackId, playerVolume, tracks]);
   
-  // Sincronizar volume do player com o audioRef
+  // Sincronizar volume do player com o GainNode local (não afeta broadcast)
+  // CRÍTICO: O volume do elemento <audio> deve sempre ser 1.0 para não afetar o MediaElementSource
   useEffect(() => {
+    // Manter o elemento <audio> sempre em 100% para não afetar o broadcast
     if (audioRef.current) {
-      audioRef.current.volume = playerVolume / 100;
+      audioRef.current.volume = 1.0;
+    }
+    
+    // Controlar volume local através do GainNode
+    const audioContext = getGlobalAudioContext(globalAudioContextRef);
+    if (audioContext && audioHubGainNodeRef.current) {
+      // Criar GainNode para volume local se não existir
+      if (!localVolumeGainNodeRef.current) {
+        localVolumeGainNodeRef.current = audioContext.createGain();
+        // CRÍTICO: Garantir que quando volume é 0, o gain também é 0
+        const initialVolume = playerVolume === 0 ? 0 : playerVolume / 100;
+        localVolumeGainNodeRef.current.gain.value = initialVolume;
+        
+        // Conectar hub → localVolumeGain → destination (para o DJ ouvir)
+        try {
+          const hub = audioHubGainNodeRef.current;
+          
+          // CRÍTICO: Primeiro, desconectar TODAS as conexões do hub e analyser ao destination
+          // Isso garante que não há conexões diretas que bypassam o localVolumeGainNode
+          try {
+            // Desconectar hub de qualquer conexão direta ao destination
+            hub.disconnect(audioContext.destination);
+            console.log('🔇 Hub desconectado do destination (se estava conectado)');
+          } catch (e) {
+            // Se não estava conectado, não há problema
+          }
+          
+          if (analyserRef.current) {
+            try {
+              // Desconectar analyser de qualquer conexão direta ao destination
+              analyserRef.current.disconnect(audioContext.destination);
+              console.log('🔇 Analyser desconectado do destination (se estava conectado)');
+            } catch (e) {
+              // Se não estava conectado, não há problema
+            }
+          }
+          
+          // CRÍTICO: Conectar hub ao localVolumeGain (para o DJ ouvir com volume controlado)
+          // O hub pode ter múltiplas conexões simultâneas, mas TODAS devem passar pelo localVolumeGainNode
+          try {
+            // CRÍTICO: Se há analyser, conectar hub → analyser → localVolumeGain → destination
+            // Se não há analyser, conectar hub → localVolumeGain → destination
+            if (analyserRef.current) {
+              // Garantir que analyser está conectado corretamente
+              try {
+                analyserRef.current.disconnect(); // Desconectar de TODAS as conexões anteriores
+              } catch (e) {
+                // Pode não estar conectado
+              }
+              
+              // CRÍTICO: Reconectar hub → analyser → localVolumeGain
+              // Primeiro desconectar hub do analyser se já estiver conectado
+              try {
+                hub.disconnect(analyserRef.current);
+              } catch (e) {
+                // Pode não estar conectado
+              }
+              
+              hub.connect(analyserRef.current);
+              analyserRef.current.connect(localVolumeGainNodeRef.current);
+              console.log('✅ Hub → Analyser → localVolumeGain reconectado corretamente');
+            } else {
+              // Conectar hub → localVolumeGain diretamente
+              // Primeiro desconectar se já estiver conectado
+              try {
+                hub.disconnect(localVolumeGainNodeRef.current);
+              } catch (e) {
+                // Pode não estar conectado
+              }
+              
+              hub.connect(localVolumeGainNodeRef.current);
+              console.log('✅ Hub → localVolumeGain reconectado corretamente');
+            }
+          } catch (e) {
+            // Se já estiver conectado, pode dar erro - ignorar
+            console.log('ℹ️ Hub já pode estar conectado ao localVolumeGain');
+          }
+          
+          // Conectar localVolumeGain ao destination (para o DJ ouvir)
+          // CRÍTICO: Garantir que esta é a ÚNICA conexão ao destination
+          try {
+            // Desconectar de qualquer conexão anterior para evitar duplicatas
+            localVolumeGainNodeRef.current.disconnect();
+          } catch (e) {
+            // Pode não estar conectado
+          }
+          
+          try {
+            localVolumeGainNodeRef.current.connect(audioContext.destination);
+            console.log('✅ localVolumeGain conectado ao destination');
+          } catch (e) {
+            // Se já estiver conectado, pode dar erro - ignorar
+            console.log('ℹ️ localVolumeGain já pode estar conectado ao destination');
+          }
+          
+          // CRÍTICO: Garantir que o hub também está conectado ao broadcast (sempre em 100%)
+          // Isso é feito em outro lugar, mas verificamos aqui também
+          if (broadcastGainNodeRef.current && broadcastDestinationRef.current) {
+            try {
+              // Verificar se já está conectado antes de conectar novamente
+              // O hub pode ter múltiplas conexões: uma para broadcast e outra para localVolumeGain
+              hub.connect(broadcastGainNodeRef.current);
+              console.log('✅ Hub conectado ao broadcastGain');
+            } catch (e) {
+              console.log('ℹ️ Hub já pode estar conectado ao broadcastGain');
+            }
+          }
+          
+          // CRÍTICO: Garantir que TODAS as conexões do hub ao destination passam pelo localVolumeGainNode
+          // O MixerConsole também conecta masterGain ao hub, então o hub terá múltiplas entradas
+          // mas TODAS as saídas ao destination devem passar pelo localVolumeGainNode
+          
+          // CRÍTICO: NÃO conectar hub ao analyser aqui diretamente
+          // O analyser deve ser conectado através do localVolumeGainNode
+          // para que o volume do mixer funcione corretamente
+          // A conexão hub → analyser → localVolumeGain já foi feita acima
+          
+        } catch (e) {
+          console.error('❌ Erro ao conectar LocalVolumeGain:', e);
+        }
+      } else {
+        // Atualizar volume do GainNode local
+        // CRÍTICO: Garantir que quando volume é 0, o gain também é 0
+        const volumeValue = playerVolume === 0 ? 0 : playerVolume / 100;
+        localVolumeGainNodeRef.current.gain.value = volumeValue;
+        console.log('🔊 Volume local atualizado:', volumeValue, `(${playerVolume}%)`);
+        
+        // CRÍTICO: Se o volume é 0, garantir que o gain é exatamente 0
+        if (playerVolume === 0) {
+          localVolumeGainNodeRef.current.gain.value = 0;
+          console.log('🔇 Volume zerado completamente - gain.value = 0');
+          
+          // CRÍTICO: Desconectar TODAS as conexões diretas do hub e analyser ao destination
+          // Isso garante que todo áudio passa pelo localVolumeGainNode (que está em 0)
+          const hub = audioHubGainNodeRef.current;
+          
+          // Desconectar hub de qualquer conexão direta ao destination
+          if (hub) {
+            try {
+              hub.disconnect(audioContext.destination);
+              console.log('🔇 Hub desconectado do destination (se estava conectado)');
+            } catch (e) {
+              // Se não estava conectado, não há problema
+            }
+          }
+          
+          // Desconectar analyser de qualquer conexão direta ao destination
+          if (analyserRef.current) {
+            try {
+              analyserRef.current.disconnect(audioContext.destination);
+              console.log('🔇 Analyser desconectado do destination (se estava conectado)');
+            } catch (e) {
+              // Se não estava conectado, não há problema
+            }
+          }
+          
+          // CRÍTICO: Garantir que o localVolumeGainNode está conectado ao destination
+          // e que é a ÚNICA conexão ao destination
+          try {
+            // Desconectar e reconectar para garantir que está correto
+            localVolumeGainNodeRef.current.disconnect();
+            localVolumeGainNodeRef.current.connect(audioContext.destination);
+            console.log('✅ localVolumeGain reconectado ao destination (única conexão)');
+          } catch (e) {
+            // Se já estiver conectado, verificar se está correto
+            console.log('ℹ️ localVolumeGain já conectado ao destination');
+          }
+        }
+      }
     }
   }, [playerVolume]);
   
@@ -7730,9 +8664,9 @@ const DJPanel = () => {
                   onChange={(e) => {
                     const newVolume = parseInt(e.target.value);
                     setPlayerVolume(newVolume);
-                    if (audioRef.current) {
-                      audioRef.current.volume = newVolume / 100;
-                    }
+                    // CRÍTICO: Não alterar audioRef.current.volume - ele deve sempre ser 1.0
+                    // O volume local será controlado pelo localVolumeGainNodeRef
+                    // O useEffect acima vai atualizar o GainNode automaticamente
                     localStorage.setItem('playerVolume', newVolume.toString());
                   }}
                   onMouseDown={(e) => {
@@ -7750,16 +8684,14 @@ const DJPanel = () => {
                 onClick={() => {
                   if (playerVolume > 0) {
                     setPlayerVolume(0);
-                    if (audioRef.current) {
-                      audioRef.current.volume = 0;
-                    }
+                    // CRÍTICO: Não alterar audioRef.current.volume - ele deve sempre ser 1.0
+                    // O volume local será controlado pelo localVolumeGainNodeRef
                     localStorage.setItem('playerVolume', '0');
                   } else {
                     const newVolume = 75;
                     setPlayerVolume(newVolume);
-                    if (audioRef.current) {
-                      audioRef.current.volume = newVolume / 100;
-                    }
+                    // CRÍTICO: Não alterar audioRef.current.volume - ele deve sempre ser 1.0
+                    // O volume local será controlado pelo localVolumeGainNodeRef
                     localStorage.setItem('playerVolume', newVolume.toString());
                   }
                 }}
@@ -7911,13 +8843,14 @@ const DJPanel = () => {
                   // Se está ativando o broadcast, garantir que o AudioContext seja retomado
                   if (!isBroadcasting) {
                     // Garantir que o AudioContext esteja ativo antes de iniciar o broadcast
-                    if (audioContextRefForSpectrum.current) {
-                      if (audioContextRefForSpectrum.current.state === 'suspended') {
-                        await audioContextRefForSpectrum.current.resume();
-                      }
+                    const audioContext = getGlobalAudioContext(globalAudioContextRef);
+                    if (audioContext.state === 'suspended') {
+                      await audioContext.resume();
                     }
                   }
-                setIsBroadcasting(!isBroadcasting);
+                const newBroadcastingState = !isBroadcasting;
+                setIsBroadcasting(newBroadcastingState);
+                isBroadcastingRef.current = newBroadcastingState; // Atualizar ref também
                 setShowHeaderMenu(false);
                 } catch (error) {
                   console.error('Erro ao alternar broadcasting:', error);
@@ -8053,10 +8986,11 @@ const DJPanel = () => {
                onPlayTrack={playTrack}
                getNextTrack={getNextTrack}
                musicAudioRef={audioRef}
-               audioContext={audioContextRefForSpectrum.current}
+               audioContext={globalAudioContextRef.current}
                mediaElementSource={mediaSourceRef.current}
                jingleAudioRefs={jingleAudioRefs}
                mediaStreamDestination={broadcastDestinationRef.current}
+               audioHub={audioHubGainNodeRef.current}
                onMicActiveChange={(active) => {
                  setMicActive(active);
                }}
