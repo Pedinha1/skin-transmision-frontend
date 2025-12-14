@@ -5656,7 +5656,7 @@ const DJPanel = () => {
             // O MediaElementSource persiste mesmo quando o src muda
             // Apenas garantir que as conexões estão corretas
             console.log('ℹ️ MediaElementSource já existe, verificando conexões...');
-          }
+                }
         } catch (checkError) {
           console.warn('⚠️ Erro ao verificar conexões do MediaElementSource:', checkError.message);
         }
@@ -7047,8 +7047,8 @@ const DJPanel = () => {
     // Se já existe, retornar
     if (mediaSourceRef.current) {
       return true;
-    }
-
+            }
+            
     // Se já tentamos criar e falhou, não tentar novamente
     if (mediaSourceCreationAttemptedRef.current) {
       return false;
@@ -7078,7 +7078,7 @@ const DJPanel = () => {
       if (audioContext.state === 'suspended') {
         audioContext.resume().catch(() => {});
       }
-
+      
       // Criar Analyser se não existir
       if (!analyserRef.current) {
         analyserRef.current = audioContext.createAnalyser();
@@ -7125,7 +7125,7 @@ const DJPanel = () => {
       // Retomar AudioContext se estiver suspenso
       if (audioContext.state === 'suspended') {
         await audioContext.resume();
-      }
+          }
       
       // Tentar criar o MediaElementSource se ainda não existe
       if (!mediaSourceRef.current && audioRef.current) {
@@ -7143,7 +7143,7 @@ const DJPanel = () => {
         try {
           if (!broadcastGainNodeRef.current) {
             broadcastGainNodeRef.current = audioContext.createGain();
-          }
+        }
           broadcastGainNodeRef.current.gain.value = channels.master / 100;
           
           try {
@@ -7189,7 +7189,7 @@ const DJPanel = () => {
       
       const mediaRecorder = new MediaRecorder(stream, { mimeType });
       streamingMediaRecorderRef.current = mediaRecorder;
-
+        
       // Enviar chunks de áudio via Socket.IO
       mediaRecorder.ondataavailable = async (event) => {
         if (event.data.size > 0 && socketRef.current?.connected) {
@@ -7211,9 +7211,9 @@ const DJPanel = () => {
           } catch (error) {
             console.error('❌ Erro ao processar chunk de áudio:', error);
           }
-        }
-      };
-
+          }
+        };
+        
       // Iniciar gravação em chunks (250ms para menor latência)
       mediaRecorder.start(250);
       
@@ -7276,7 +7276,7 @@ const DJPanel = () => {
             radioName: radioName
           });
           console.log('📡 Streaming direto iniciado - ouvintes serão notificados');
-        }
+            }
       });
     } else {
       // Parar streaming
