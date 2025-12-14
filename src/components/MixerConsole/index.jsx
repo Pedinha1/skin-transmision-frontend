@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import styled, { keyframes, css } from 'styled-components';
 import mascotService from '../../services/mascotService';
+import aiSearchService from '../../services/aiSearchService';
 import { pulse, shimmer } from '../../styles/animations';
 import AutoRequestProcessor from '../AutoRequestProcessor';
 
@@ -22,10 +23,8 @@ const float = keyframes`
 `;
 
 const talk = keyframes`
-  0%, 100% { transform: scaleY(1); }
-  25% { transform: scaleY(0.3); }
-  50% { transform: scaleY(1.2); }
-  75% { transform: scaleY(0.5); }
+  0%, 100% { transform: translateX(-50%) scaleY(1); }
+  50% { transform: translateX(-50%) scaleY(0.3); }
 `;
 
 const blink = keyframes`
@@ -61,14 +60,29 @@ const antennaPulse = keyframes`
 `;
 
 const scanLine = keyframes`
-  0% { transform: translateX(-100%); opacity: 0; }
-  50% { opacity: 1; }
-  100% { transform: translateX(100%); opacity: 0; }
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
 `;
 
 const robotBounce = keyframes`
   0%, 100% { transform: translateY(0px) scaleY(1); }
   50% { transform: translateY(-8px) scaleY(0.95); }
+`;
+
+const hologramFlicker = keyframes`
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
+  75% { opacity: 0.95; }
+`;
+
+const circuitPulse = keyframes`
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+`;
+
+const eyeBlink = keyframes`
+  0%, 90%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
 `;
 
 const Container = styled.div`
@@ -214,7 +228,203 @@ const GridElement = styled.div`
   grid-row: ${props => props.$gridRow || 'span 12'};
 `;
 
-// Mascote Animado
+// ============================================
+// DISPLAY TECNOLÓGICO DO ROBÔ (igual ao do ouvinte)
+// ============================================
+const RobotDisplayContainer = styled.div`
+  width: 100%;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.95) 100%);
+  backdrop-filter: blur(15px);
+  border: 2px solid rgba(6, 182, 212, 0.3);
+  border-radius: 16px;
+  padding: 1rem;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 
+    0 15px 30px rgba(0, 0, 0, 0.4),
+    0 0 25px rgba(6, 182, 212, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  ${css`animation: ${hologramFlicker} 4s ease-in-out infinite;`}
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: 
+      repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(6, 182, 212, 0.03) 2px,
+        rgba(6, 182, 212, 0.03) 4px
+      );
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    top: -100%;
+    left: 0;
+    right: 0;
+    height: 50%;
+    background: linear-gradient(
+      180deg,
+      transparent,
+      rgba(6, 182, 212, 0.1),
+      transparent
+    );
+    ${css`animation: ${scanLine} 3s linear infinite;`}
+    pointer-events: none;
+    z-index: 2;
+  }
+`;
+
+const RobotDisplayHeader = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(6, 182, 212, 0.2);
+  position: relative;
+  z-index: 10;
+`;
+
+const RobotDisplayTitle = styled.div`
+  color: #f1f5f9;
+  font-weight: 700;
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  
+  span {
+    font-size: 1rem;
+    background: linear-gradient(135deg, #06b6d4 0%, #22d3ee 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+`;
+
+const RobotStatusIndicator = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: ${props => props.$active 
+    ? 'linear-gradient(135deg, rgba(6, 182, 212, 0.2) 0%, rgba(34, 211, 238, 0.15) 100%)'
+    : 'rgba(100, 116, 139, 0.2)'};
+  border: 1px solid ${props => props.$active ? 'rgba(6, 182, 212, 0.5)' : 'rgba(100, 116, 139, 0.3)'};
+  border-radius: 15px;
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: ${props => props.$active ? '#22d3ee' : '#94a3b8'};
+  text-transform: uppercase;
+  letter-spacing: 1px;
+`;
+
+const RobotViewport = styled.div`
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/10;
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.05) 0%, rgba(15, 23, 42, 0.8) 50%, rgba(139, 92, 246, 0.05) 100%);
+  border: 1px solid rgba(6, 182, 212, 0.2);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  z-index: 10;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: 
+      radial-gradient(circle at 30% 30%, rgba(6, 182, 212, 0.1) 0%, transparent 50%),
+      radial-gradient(circle at 70% 70%, rgba(139, 92, 246, 0.1) 0%, transparent 50%);
+    pointer-events: none;
+  }
+`;
+
+const CircuitPattern = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    linear-gradient(90deg, rgba(6, 182, 212, 0.1) 1px, transparent 1px),
+    linear-gradient(rgba(6, 182, 212, 0.1) 1px, transparent 1px);
+  background-size: 15px 15px;
+  ${css`animation: ${circuitPulse} 2s ease-in-out infinite;`}
+  pointer-events: none;
+`;
+
+const RobotSpeechBubble = styled.div`
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.95) 0%, rgba(34, 211, 238, 0.95) 100%);
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 10px;
+  padding: 6px 12px;
+  color: #0f172a;
+  font-weight: 700;
+  font-size: 0.7rem;
+  max-width: 90%;
+  text-align: center;
+  z-index: 100;
+  box-shadow: 0 4px 15px rgba(6, 182, 212, 0.4);
+  
+  &::after {
+    content: '';
+    position: absolute;
+    bottom: -6px;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 6px solid transparent;
+    border-top-color: rgba(34, 211, 238, 0.95);
+  }
+`;
+
+const DataOverlay = styled.div`
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.5rem;
+  color: rgba(6, 182, 212, 0.7);
+  font-family: 'Courier New', monospace;
+  font-weight: 600;
+  letter-spacing: 1px;
+  z-index: 30;
+`;
+
+const RobotControlsRow = styled.div`
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 0.75rem;
+  position: relative;
+  z-index: 10;
+`;
+
+// Mascote Animado (mantido para compatibilidade)
 const MascotContainer = styled.div`
   position: relative;
   z-index: 1000;
@@ -260,329 +470,199 @@ const SpeechBubble = styled.div`
 // Container do Robô
 const RobotContainer = styled.div`
   position: relative;
-  width: 168px;
-  height: 192px;
-  margin-top: 10px;
-  animation: ${robotFloat} 3s ease-in-out infinite;
+  width: 120px;
+  height: 140px;
+  ${css`animation: ${robotFloat} 3s ease-in-out infinite;`}
   cursor: pointer;
   transition: transform 0.2s;
+  z-index: 20;
   
   &:hover {
-    animation: ${robotPulse} 1.5s ease-in-out infinite;
+    ${css`animation: ${robotPulse} 1.5s ease-in-out infinite;`}
   }
 `;
 
 // Antenas do Robô
 const RobotAntenna = styled.div`
   position: absolute;
-  top: -36px;
-  left: ${props => props.$left ? '52px' : '96px'};
-  width: 4px;
-  height: 40px;
-  z-index: 5;
-  background: linear-gradient(180deg, 
-    #06b6d4 0%,
-    #22d3ee 50%,
-    #67e8f9 100%
-  );
-  border-radius: 4px;
-  box-shadow: 
-    0 0 15px rgba(6, 182, 212, 0.8),
-    0 0 30px rgba(34, 211, 238, 0.6),
-    inset 0 0 10px rgba(103, 232, 249, 0.5);
-  transform-origin: bottom center;
-  animation: ${antennaPulse} 2s ease-in-out infinite;
-  animation-delay: ${props => props.$left ? '0s' : '0.3s'};
+  top: -24px;
+  left: ${props => props.$left ? '35px' : '70px'};
+  width: 3px;
+  height: 24px;
+  background: linear-gradient(180deg, #06b6d4 0%, #0f172a 100%);
+  border-radius: 2px;
   
-  &::before {
+  &::after {
     content: '';
     position: absolute;
-    top: -8px;
+    top: -6px;
     left: 50%;
     transform: translateX(-50%);
     width: 10px;
     height: 10px;
-    background: radial-gradient(circle, #67e8f9 0%, #22d3ee 50%, #06b6d4 100%);
+    background: ${props => props.$left 
+      ? 'radial-gradient(circle, #06b6d4 0%, #0891b2 100%)'
+      : 'radial-gradient(circle, #22d3ee 0%, #06b6d4 100%)'};
     border-radius: 50%;
-    box-shadow: 
-      0 0 20px rgba(103, 232, 249, 1),
-      0 0 40px rgba(34, 211, 238, 0.8),
-      inset 0 0 10px rgba(255, 255, 255, 0.5);
-    animation: ${ledBlink} 1.5s ease-in-out infinite;
+    box-shadow: 0 0 12px ${props => props.$left ? '#06b6d4' : '#22d3ee'};
+    ${css`animation: ${pulse} 2s ease-in-out infinite;`}
   }
 `;
 
 // Cabeça do Robô
 const RobotHead = styled.div`
   position: absolute;
-  top: 16px;
+  top: 8px;
   left: 50%;
   transform: translateX(-50%);
-  width: 112px;
-  height: 108px;
-  background: linear-gradient(135deg, 
-    #1e293b 0%,
-    #334155 25%,
-    #475569 50%,
-    #334155 75%,
-    #1e293b 100%
-  );
-  border-radius: 10px 10px 14px 14px;
+  width: 80px;
+  height: 60px;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
   border: 2px solid #06b6d4;
+  border-radius: 16px;
   box-shadow: 
-    0 0 30px rgba(6, 182, 212, 0.6),
-    0 10px 40px rgba(0, 0, 0, 0.8),
-    0 4px 12px rgba(0, 0, 0, 0.5),
-    inset 0 -10px 25px rgba(0, 0, 0, 0.4),
-    inset 0 8px 20px rgba(6, 182, 212, 0.2),
-    inset -4px -4px 12px rgba(0, 0, 0, 0.3),
-    inset 4px 4px 8px rgba(103, 232, 249, 0.3);
-  animation: ${props => props.$talking ? robotBounce : 'none'} 0.5s ease-in-out infinite;
+    0 0 15px rgba(6, 182, 212, 0.4),
+    inset 0 6px 15px rgba(6, 182, 212, 0.2),
+    inset -3px -3px 10px rgba(0, 0, 0, 0.3);
+  ${props => props.$talking ? css`animation: ${robotBounce} 0.5s ease-in-out infinite;` : css`animation: none;`}
   position: relative;
   z-index: 3;
   overflow: hidden;
-  
+
   &::before {
     content: '';
     position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, 
-      transparent 0%,
-      rgba(103, 232, 249, 0.3) 50%,
-      transparent 100%
-    );
-    animation: ${props => props.$talking ? scanLine : 'none'} 2s linear infinite;
+    top: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.5), transparent);
+    border-radius: 2px;
   }
 `;
 
 // Olhos LED do Robô
 const RobotEye = styled.div`
   position: absolute;
-  top: 30px;
-  left: ${props => props.$left ? '30px' : '72px'};
-  width: 24px;
-  height: 24px;
-  background: radial-gradient(circle, 
-    #06b6d4 0%,
-    #0ea5e9 40%,
-    #0284c7 70%,
-    #0369a1 100%
-  );
+  top: 20px;
+  left: ${props => props.$left ? '16px' : '48px'};
+  width: 18px;
+  height: 18px;
+  background: radial-gradient(circle, #22d3ee 0%, #06b6d4 50%, #0891b2 100%);
   border-radius: 50%;
-  border: 1px solid #67e8f9;
   box-shadow: 
-    0 0 20px rgba(6, 182, 212, 1),
-    0 0 40px rgba(34, 211, 238, 0.8),
-    0 0 60px rgba(103, 232, 249, 0.5),
-    inset 0 0 15px rgba(103, 232, 249, 0.8),
-    inset 0 0 30px rgba(255, 255, 255, 0.3);
-  animation: ${ledBlink} 3s infinite;
-  z-index: 2;
-  
+    0 0 15px rgba(34, 211, 238, 0.8),
+    inset 2px 2px 4px rgba(255, 255, 255, 0.3);
+  ${css`animation: ${eyeBlink} 4s ease-in-out infinite;`}
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 5px;
+    height: 5px;
+    background: white;
+    border-radius: 50%;
+    opacity: 0.8;
+  }
+
   &::after {
     content: '';
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 14px;
-    height: 14px;
-    background: radial-gradient(circle, 
-      #ffffff 0%,
-      #67e8f9 50%,
-      #22d3ee 100%
-    );
+    width: 6px;
+    height: 6px;
+    background: #0f172a;
     border-radius: 50%;
-    box-shadow: 
-      0 0 15px rgba(255, 255, 255, 1),
-      0 0 30px rgba(103, 232, 249, 0.8);
-    z-index: 1;
   }
 `;
 
-// Sensor central do Robô
+// Sensor central do Robô (não usado no novo design)
 const RobotSensor = styled.div`
-  position: absolute;
-  top: 60px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 16px;
-  height: 16px;
-  background: radial-gradient(circle, 
-    #06b6d4 0%,
-    #0ea5e9 30%,
-    #0284c7 60%,
-    #0369a1 100%
-  );
-  border-radius: 50%;
-  border: 1px solid #67e8f9;
-  box-shadow: 
-    0 0 15px rgba(6, 182, 212, 0.8),
-    0 0 30px rgba(34, 211, 238, 0.6),
-    inset 0 0 10px rgba(103, 232, 249, 0.6);
-  z-index: 2;
-  animation: ${pulse} 2s ease-in-out infinite;
-  
-  &::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 8px;
-    height: 8px;
-    background: #67e8f9;
-    border-radius: 50%;
-    box-shadow: 0 0 10px rgba(103, 232, 249, 1);
-  }
+  display: none;
 `;
 
 // Alto-falante/Grille do Robô
 const RobotSpeaker = styled.div`
   position: absolute;
-  top: 76px;
+  top: 44px;
   left: 50%;
   transform: translateX(-50%);
-  width: ${props => props.$talking ? '48px' : '36px'};
-  height: ${props => props.$talking ? '18px' : '14px'};
-  background: linear-gradient(180deg, 
-    #0f172a 0%,
-    #1e293b 50%,
+  width: 24px;
+  height: 6px;
+  background: linear-gradient(90deg, 
+    #0f172a 0%, 
+    #06b6d4 10%, 
+    #0f172a 20%,
+    #06b6d4 30%,
+    #0f172a 40%,
+    #06b6d4 50%,
+    #0f172a 60%,
+    #06b6d4 70%,
+    #0f172a 80%,
+    #06b6d4 90%,
     #0f172a 100%
   );
-  border: 2px solid #06b6d4;
-  border-radius: 4px;
-  box-shadow: 
-    0 0 15px rgba(6, 182, 212, 0.6),
-    inset 0 0 10px rgba(0, 0, 0, 0.8),
-    inset 0 2px 4px rgba(34, 211, 238, 0.2);
-  z-index: 2;
-  position: relative;
-  overflow: hidden;
-  
-  &::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-image: 
-      repeating-linear-gradient(0deg, 
-        transparent 0px,
-        transparent 3px,
-        rgba(6, 182, 212, 0.3) 3px,
-        rgba(6, 182, 212, 0.3) 6px
-      );
-  }
-  
-  animation: ${props => props.$talking ? talk : 'none'} 0.4s ease-in-out infinite;
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(6, 182, 212, 0.5);
+  ${props => props.$talking ? css`animation: ${talk} 0.4s ease-in-out infinite;` : css`animation: none;`}
 `;
 
 // Corpo do Robô
 const RobotBody = styled.div`
   position: absolute;
-  top: 102px;
+  top: 72px;
   left: 50%;
   transform: translateX(-50%);
-  width: 98px;
-  height: 78px;
-  background: linear-gradient(135deg, 
-    #1e293b 0%,
-    #334155 25%,
-    #475569 50%,
-    #334155 75%,
-    #1e293b 100%
-  );
-  border-radius: 6px 6px 10px 10px;
+  width: 56px;
+  height: 48px;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
   border: 2px solid #06b6d4;
+  border-radius: 10px;
   box-shadow: 
-    0 0 25px rgba(6, 182, 212, 0.5),
-    0 8px 30px rgba(0, 0, 0, 0.6),
-    0 3px 10px rgba(0, 0, 0, 0.4),
-    inset 0 -6px 18px rgba(0, 0, 0, 0.4),
-    inset 0 5px 15px rgba(6, 182, 212, 0.2),
-    inset -3px -3px 10px rgba(0, 0, 0, 0.3),
-    inset 3px 3px 8px rgba(103, 232, 249, 0.2);
+    0 0 12px rgba(6, 182, 212, 0.3),
+    inset 0 4px 8px rgba(6, 182, 212, 0.1);
   position: relative;
-  
+
   &::before {
-    content: '';
+    content: '⚡';
     position: absolute;
-    top: 12px;
-    left: 12px;
-    right: 12px;
-    height: 2px;
-    background: linear-gradient(90deg, 
-      transparent 0%,
-      #06b6d4 20%,
-      #22d3ee 50%,
-      #67e8f9 80%,
-      transparent 100%
-    );
-    opacity: 0.6;
-  }
-  
-  &::after {
-    content: '';
-    position: absolute;
-    bottom: 12px;
+    top: 50%;
     left: 50%;
-    transform: translateX(-50%);
-    width: 36px;
-    height: 4px;
-    background: linear-gradient(90deg, 
-      #0f172a 0%,
-      #06b6d4 50%,
-      #0f172a 100%
-    );
-    border-radius: 4px;
-    box-shadow: 0 0 10px rgba(6, 182, 212, 0.5);
+    transform: translate(-50%, -50%);
+    font-size: 1.2rem;
+    opacity: 0.7;
   }
 `;
 
 // Braços/Mãos do Robô
 const RobotArm = styled.div`
   position: absolute;
-  top: ${props => props.$front ? '156px' : '162px'};
-  left: ${props => props.$left ? '24px' : '114px'};
-  width: 18px;
-  height: 40px;
-  background: linear-gradient(180deg, 
-    #334155 0%,
-    #475569 50%,
-    #334155 100%
-  );
-  border-radius: 4px 4px 6px 6px;
+  top: ${props => props.$front ? '82px' : '86px'};
+  left: ${props => props.$left ? '12px' : '94px'};
+  width: 8px;
+  height: 28px;
+  background: linear-gradient(180deg, #0f172a 0%, #06b6d4 50%, #0f172a 100%);
   border: 2px solid #06b6d4;
-  box-shadow: 
-    0 0 15px rgba(6, 182, 212, 0.4),
-    0 5px 15px rgba(0, 0, 0, 0.5),
-    0 2px 6px rgba(0, 0, 0, 0.3),
-    inset 0 -4px 10px rgba(0, 0, 0, 0.3),
-    inset 0 3px 8px rgba(34, 211, 238, 0.2);
-  
-  &::before {
+  border-radius: 4px;
+  transform: ${props => props.$left ? 'rotate(15deg)' : 'rotate(-15deg)'};
+  box-shadow: 0 0 8px rgba(6, 182, 212, 0.3);
+
+  &::after {
     content: '';
     position: absolute;
-    bottom: -4px;
+    bottom: -6px;
     left: 50%;
     transform: translateX(-50%);
-    width: 16px;
-    height: 16px;
-    background: radial-gradient(circle, 
-      #475569 0%,
-      #334155 50%,
-      #1e293b 100%
-    );
+    width: 12px;
+    height: 12px;
+    background: radial-gradient(circle, #06b6d4 0%, #0891b2 100%);
     border-radius: 50%;
-    border: 2px solid #06b6d4;
-    box-shadow: 
-      0 0 10px rgba(6, 182, 212, 0.5),
-      inset 0 0 8px rgba(0, 0, 0, 0.5);
+    border: 2px solid #22d3ee;
   }
 `;
 
@@ -958,6 +1038,93 @@ const MicTitle = styled.div`
   letter-spacing: 2px;
   text-align: center;
   text-shadow: 0 0 10px rgba(251, 191, 36, 0.5);
+`;
+
+// BOTÃO PUSH-TO-TALK (segure para falar)
+const PushToTalkButton = styled.button`
+  width: 80px;
+  height: 80px;
+  min-width: 80px;
+  max-width: 80px;
+  min-height: 80px;
+  max-height: 80px;
+  border-radius: 50%;
+  background: ${props => props.$active 
+    ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
+    : 'linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.8) 100%)'
+  };
+  border: 3px solid ${props => props.$active ? '#ef4444' : 'rgba(6, 182, 212, 0.5)'};
+  color: white;
+  font-size: 1.8rem;
+  font-weight: 900;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  box-shadow: ${props => props.$active 
+    ? '0 0 40px rgba(239, 68, 68, 0.8), 0 8px 30px rgba(0, 0, 0, 0.4), inset 0 -4px 10px rgba(0, 0, 0, 0.3)'
+    : '0 4px 15px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
+  };
+  transform: ${props => props.$active ? 'scale(0.95)' : 'scale(1)'};
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+
+  &:hover:not(:active) {
+    border-color: #22d3ee;
+    box-shadow: 0 0 25px rgba(6, 182, 212, 0.5), 0 6px 20px rgba(0, 0, 0, 0.4);
+  }
+
+  &::before {
+    content: '';
+    position: absolute;
+    width: 60%;
+    height: 60%;
+    border-radius: 50%;
+    background: ${props => props.$active 
+      ? 'radial-gradient(circle, rgba(255, 255, 255, 0.3) 0%, transparent 70%)'
+      : 'radial-gradient(circle, rgba(6, 182, 212, 0.2) 0%, transparent 70%)'
+    };
+    animation: ${props => props.$active ? pulse : 'none'} 0.5s infinite;
+  }
+`;
+
+const PushToTalkContainer = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(220, 38, 38, 0.05) 100%);
+  border: 2px solid rgba(239, 68, 68, 0.3);
+  border-radius: 16px;
+  position: relative;
+
+  &::before {
+    content: 'SEGURE PARA FALAR';
+    position: absolute;
+    top: -10px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    padding: 2px 10px;
+    border-radius: 10px;
+    font-size: 0.6rem;
+    font-weight: 800;
+    color: #ef4444;
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+`;
+
+const PushToTalkLabel = styled.div`
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: ${props => props.$active ? '#ef4444' : '#94a3b8'};
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  text-shadow: ${props => props.$active ? '0 0 10px rgba(239, 68, 68, 0.5)' : 'none'};
 `;
 
 const MicButton = styled.button`
@@ -2008,7 +2175,13 @@ const MixerConsole = ({
   // Callback para quando o mascote começar a falar
   onMascotStartSpeaking = null,
   // Callback para quando o mascote parar de falar
-  onMascotStopSpeaking = null
+  onMascotStopSpeaking = null,
+  // Callback para enviar comando de voz para ouvintes
+  onVoiceCommand = null,
+  // Callback para comandos de controle do DJ (transmissão, autoDJ, etc)
+  onDJCommand = null,
+  // Estado atual da transmissão
+  isBroadcasting = false
 }) => {
   const [channels, setChannels] = useState({
     master: 80,
@@ -2061,7 +2234,9 @@ const MixerConsole = ({
   // Estados do Mascote
   const [mascotEnabled, setMascotEnabled] = useState(true);
   const [mascotMessage, setMascotMessage] = useState('');
+  const [mascotMessagesHistory, setMascotMessagesHistory] = useState([]);
   const [isMascotTalking, setIsMascotTalking] = useState(false);
+  const messagesScrollRef = useRef(null);
   
   const [mascotData, setMascotData] = useState(null);
   const [mascotLevel, setMascotLevel] = useState(1);
@@ -2077,6 +2252,273 @@ const MixerConsole = ({
   const mascotGainNodeRef = useRef(null);
   const isSpeakingRef = useRef(false);
   
+  
+  // ============================================
+  // PUSH-TO-TALK STATES
+  // ============================================
+  const [isPushToTalkActive, setIsPushToTalkActive] = useState(false);
+  const [pushToTalkVuLevel, setPushToTalkVuLevel] = useState(0);
+  const pushToTalkStreamRef = useRef(null);
+  const pushToTalkAudioContextRef = useRef(null);
+  const pushToTalkAnalyserRef = useRef(null);
+  const pushToTalkAnimationRef = useRef(null);
+  const pushToTalkGainNodeRef = useRef(null);
+  const pushToTalkSourceRef = useRef(null);
+  const pushToTalkRecognitionRef = useRef(null);
+  const [lastVoiceCommand, setLastVoiceCommand] = useState('');
+  
+  // Função para iniciar push-to-talk
+  const startPushToTalk = useCallback(async () => {
+    if (isPushToTalkActive) return;
+    
+    try {
+      console.log('🎤 Iniciando Push-to-Talk...');
+      
+      // Criar AudioContext
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      pushToTalkAudioContextRef.current = audioContext;
+      
+      // Criar analyser
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.8;
+      pushToTalkAnalyserRef.current = analyser;
+      
+      // Criar gain node
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 2.0; // Boost do microfone
+      pushToTalkGainNodeRef.current = gainNode;
+      
+      // Solicitar acesso ao microfone
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
+      
+      pushToTalkStreamRef.current = stream;
+      
+      // Criar source do stream
+      const source = audioContext.createMediaStreamSource(stream);
+      pushToTalkSourceRef.current = source;
+      
+      // Conectar: source -> gainNode -> analyser
+      source.connect(gainNode);
+      gainNode.connect(analyser);
+      
+      // Criar destination para transmissão
+      const destination = audioContext.createMediaStreamDestination();
+      gainNode.connect(destination);
+      
+      // Enviar stream para o callback
+      if (onMicStreamChange) {
+        onMicStreamChange(destination.stream);
+      }
+      
+      // Iniciar reconhecimento de voz
+      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'pt-BR';
+        
+        recognition.onresult = (event) => {
+          const last = event.results.length - 1;
+          const command = event.results[last][0].transcript.toLowerCase().trim();
+          
+          if (event.results[last].isFinal) {
+            console.log('🎤 Comando de voz detectado:', command);
+            setLastVoiceCommand(command);
+            
+            // Verificar e executar comandos de controle do DJ
+            if (onDJCommand) {
+              // Ligar transmissão
+              if (command.includes('ligar') && (command.includes('transmissão') || command.includes('transmissao'))) {
+                console.log('🎙️ Comando: LIGAR TRANSMISSÃO');
+                onDJCommand('start_broadcast');
+              }
+              // Parar transmissão
+              else if ((command.includes('parar') || command.includes('desligar')) && (command.includes('transmissão') || command.includes('transmissao'))) {
+                console.log('🎙️ Comando: PARAR TRANSMISSÃO');
+                onDJCommand('stop_broadcast');
+              }
+              // Ligar AutoDJ
+              else if (command.includes('ligar') && (command.includes('auto dj') || command.includes('autodj') || command.includes('auto-dj'))) {
+                console.log('🎙️ Comando: LIGAR AUTO DJ');
+                onDJCommand('enable_autodj');
+              }
+              // Desligar AutoDJ
+              else if ((command.includes('desligar') || command.includes('parar')) && (command.includes('auto dj') || command.includes('autodj') || command.includes('auto-dj'))) {
+                console.log('🎙️ Comando: DESLIGAR AUTO DJ');
+                onDJCommand('disable_autodj');
+              }
+              // Ativar busca automática
+              else if (command.includes('ativar') && command.includes('busca') && (command.includes('automática') || command.includes('automatica'))) {
+                console.log('🎙️ Comando: ATIVAR BUSCA AUTOMÁTICA');
+                onDJCommand('enable_auto_search');
+              }
+              // Desativar busca automática
+              else if (command.includes('desativar') && command.includes('busca') && (command.includes('automática') || command.includes('automatica'))) {
+                console.log('🎙️ Comando: DESATIVAR BUSCA AUTOMÁTICA');
+                onDJCommand('disable_auto_search');
+              }
+              // Próxima música
+              else if ((command.includes('próxima') || command.includes('proxima')) && command.includes('música')) {
+                console.log('🎙️ Comando: PRÓXIMA MÚSICA');
+                onDJCommand('next_track');
+              }
+              // Música anterior
+              else if ((command.includes('anterior') || command.includes('volta')) && command.includes('música')) {
+                console.log('🎙️ Comando: MÚSICA ANTERIOR');
+                onDJCommand('previous_track');
+              }
+              // Play/Pause
+              else if (command.includes('pausar') || command.includes('pause')) {
+                console.log('🎙️ Comando: PAUSAR');
+                onDJCommand('pause');
+              }
+              else if (command.includes('tocar') || command.includes('play') || command.includes('reproduzir')) {
+                console.log('🎙️ Comando: TOCAR');
+                onDJCommand('play');
+              }
+            }
+            
+            // Enviar comando via socket para os ouvintes
+            if (socket && socket.connected) {
+              socket.emit('dj:voice:command', {
+                command: command,
+                timestamp: Date.now()
+              });
+              console.log('📡 Comando de voz enviado para ouvintes:', command);
+            }
+            
+            // Callback opcional
+            if (onVoiceCommand) {
+              onVoiceCommand(command);
+            }
+          }
+        };
+        
+        recognition.onerror = (event) => {
+          console.warn('⚠️ Erro no reconhecimento de voz:', event.error);
+        };
+        
+        recognition.start();
+        pushToTalkRecognitionRef.current = recognition;
+        console.log('✅ Reconhecimento de voz iniciado');
+      }
+      
+      // Animar VU Meter
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      const updateVU = () => {
+        if (!pushToTalkStreamRef.current) return;
+        
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / dataArray.length;
+        const level = Math.min(100, (average / 255) * 100 * 2);
+        setPushToTalkVuLevel(level);
+        
+        pushToTalkAnimationRef.current = requestAnimationFrame(updateVU);
+      };
+      
+      updateVU();
+      setIsPushToTalkActive(true);
+      console.log('✅ Push-to-Talk ativado!');
+      
+    } catch (err) {
+      console.error('❌ Erro ao iniciar Push-to-Talk:', err);
+      alert('Erro ao acessar o microfone. Verifique as permissões.');
+    }
+  }, [isPushToTalkActive, socket, onMicStreamChange, onVoiceCommand, onDJCommand]);
+  
+  // Função para parar push-to-talk
+  const stopPushToTalk = useCallback(() => {
+    if (!isPushToTalkActive) return;
+    
+    console.log('🎤 Parando Push-to-Talk...');
+    
+    // Parar reconhecimento de voz
+    if (pushToTalkRecognitionRef.current) {
+      pushToTalkRecognitionRef.current.stop();
+      pushToTalkRecognitionRef.current = null;
+    }
+    
+    // Parar animação
+    if (pushToTalkAnimationRef.current) {
+      cancelAnimationFrame(pushToTalkAnimationRef.current);
+      pushToTalkAnimationRef.current = null;
+    }
+    
+    // Parar stream
+    if (pushToTalkStreamRef.current) {
+      pushToTalkStreamRef.current.getTracks().forEach(track => track.stop());
+      pushToTalkStreamRef.current = null;
+    }
+    
+    // Desconectar nodes
+    if (pushToTalkSourceRef.current) {
+      try { pushToTalkSourceRef.current.disconnect(); } catch (e) {}
+      pushToTalkSourceRef.current = null;
+    }
+    
+    if (pushToTalkGainNodeRef.current) {
+      try { pushToTalkGainNodeRef.current.disconnect(); } catch (e) {}
+      pushToTalkGainNodeRef.current = null;
+    }
+    
+    // Fechar AudioContext
+    if (pushToTalkAudioContextRef.current && pushToTalkAudioContextRef.current.state !== 'closed') {
+      pushToTalkAudioContextRef.current.close();
+      pushToTalkAudioContextRef.current = null;
+    }
+    
+    // Notificar que o stream parou
+    if (onMicStreamChange) {
+      onMicStreamChange(null);
+    }
+    
+    setPushToTalkVuLevel(0);
+    setIsPushToTalkActive(false);
+    console.log('✅ Push-to-Talk desativado!');
+  }, [isPushToTalkActive, onMicStreamChange]);
+  
+  // Handlers para o botão push-to-talk (mouse e touch)
+  const handlePushToTalkMouseDown = useCallback((e) => {
+    e.preventDefault();
+    startPushToTalk();
+  }, [startPushToTalk]);
+  
+  const handlePushToTalkMouseUp = useCallback((e) => {
+    e.preventDefault();
+    stopPushToTalk();
+  }, [stopPushToTalk]);
+  
+  const handlePushToTalkTouchStart = useCallback((e) => {
+    e.preventDefault();
+    startPushToTalk();
+  }, [startPushToTalk]);
+  
+  const handlePushToTalkTouchEnd = useCallback((e) => {
+    e.preventDefault();
+    stopPushToTalk();
+  }, [stopPushToTalk]);
+  
+  // Cleanup ao desmontar
+  useEffect(() => {
+    return () => {
+      if (isPushToTalkActive) {
+        stopPushToTalk();
+      }
+    };
+  }, []);
   
   const mascotMessages = useMemo(() => [
     'Olá! Como posso ajudar?',
@@ -2820,9 +3262,10 @@ const MixerConsole = ({
       return { type: 'track', answer: 'No momento não há música tocando.' };
     }
     
-    // Resposta padrão para outras perguntas
+    // Se é uma pergunta que não sabemos responder localmente, retornar null
+    // para que o sistema busque na internet
     if (lowerText.includes('?') || isQuestion(text)) {
-      return { type: 'generic', answer: 'Essa é uma boa pergunta! Mas no momento eu só consigo responder sobre cálculos matemáticos simples, hora, data e a música que está tocando. Que tal fazer uma pergunta sobre isso?' };
+      return { type: 'search_online', answer: null };
     }
     
     return null;
@@ -2989,12 +3432,33 @@ const MixerConsole = ({
             
             if (answer.type === 'math') {
               responseText = `A resposta de ${answer.expression} é ${answer.answer}.`;
+            } else if (answer.type === 'search_online') {
+              // Buscar resposta na internet usando AI
+              console.log('🔍 Buscando resposta na internet para:', textToRead);
+              
+              // Mostrar que está buscando
+              makeMascotSpeak('Deixa eu pesquisar...', false);
+              
+              try {
+                const searchResult = await aiSearchService.searchAnswer(textToRead);
+                
+                if (searchResult.success && searchResult.answer) {
+                  responseText = searchResult.answer;
+                  console.log('✅ Resposta encontrada online:', responseText);
+                } else {
+                  responseText = 'Desculpe, não consegui encontrar a resposta para essa pergunta.';
+                  console.log('⚠️ Não foi possível buscar resposta online');
+                }
+              } catch (searchError) {
+                console.error('❌ Erro ao buscar resposta:', searchError);
+                responseText = 'Ops, tive um problema ao buscar a resposta. Tente novamente!';
+              }
             } else {
               responseText = answer.answer;
             }
             
             // Enviar resposta no chat
-            if (socket && socket.connected) {
+            if (socket && socket.connected && responseText) {
               const now = new Date();
               const hours = String(now.getHours()).padStart(2, '0');
               const minutes = String(now.getMinutes()).padStart(2, '0');
@@ -3012,10 +3476,20 @@ const MixerConsole = ({
               
               socket.emit('chat:message', responseMessage);
               console.log('✅ Mascote respondeu no chat:', responseText);
+              
+              // Enviar resposta do robô para os ouvintes falarem também
+              socket.emit('robot:answer', {
+                text: responseText,
+                question: textToRead,
+                timestamp: Date.now()
+              });
+              console.log('📡 Resposta do robô enviada para ouvintes:', responseText);
             }
             
             // Fazer o mascote falar a resposta
-            makeMascotSpeak(responseText, true);
+            if (responseText) {
+              makeMascotSpeak(responseText, true);
+            }
             
             // Não ler a mensagem original se já respondeu
             return;
@@ -4245,6 +4719,7 @@ const MixerConsole = ({
           </StatusIndicator>
         </Title>
         <Controls>
+          {/* Botão Ligar/Desligar Robô */}
           <IconButton 
             onClick={handleToggleMascot} 
             title={mascotEnabled ? "Desligar AI Assistente" : "Ligar AI Assistente"}
@@ -4261,53 +4736,136 @@ const MixerConsole = ({
           >
             {mascotEnabled ? '🤖' : '⚫'}
           </IconButton>
+          
+          {/* Botão Push-to-Talk para Comandos de Voz */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <IconButton
+              onMouseDown={handlePushToTalkMouseDown}
+              onMouseUp={handlePushToTalkMouseUp}
+              onMouseLeave={handlePushToTalkMouseUp}
+              onTouchStart={handlePushToTalkTouchStart}
+              onTouchEnd={handlePushToTalkTouchEnd}
+              onTouchCancel={handlePushToTalkTouchEnd}
+              title={`Segure para falar (Comandos: ligar/parar transmissão, ligar/desligar autodj, próxima/anterior música)${lastVoiceCommand ? `\nÚltimo: ${lastVoiceCommand}` : ''}`}
+              style={{
+                background: isPushToTalkActive 
+                  ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.9) 0%, rgba(220, 38, 38, 0.9) 100%)'
+                  : 'linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.8) 100%)',
+                borderColor: isPushToTalkActive ? '#ef4444' : 'rgba(6, 182, 212, 0.4)',
+                color: isPushToTalkActive ? '#ffffff' : '#22d3ee',
+                boxShadow: isPushToTalkActive 
+                  ? '0 0 20px rgba(239, 68, 68, 0.6), 0 2px 8px rgba(0, 0, 0, 0.3)'
+                  : '0 2px 8px rgba(0, 0, 0, 0.3)',
+                animation: isPushToTalkActive ? 'pulse 1s infinite' : 'none'
+              }}
+            >
+              🎤
+            </IconButton>
+            
+            {/* Mini VU Meter */}
+            <div style={{
+              width: '6px',
+              height: '30px',
+              background: 'rgba(0, 0, 0, 0.4)',
+              borderRadius: '3px',
+              overflow: 'hidden',
+              display: 'flex',
+              flexDirection: 'column-reverse'
+            }}>
+              <div style={{
+                width: '100%',
+                height: `${pushToTalkVuLevel}%`,
+                background: pushToTalkVuLevel > 80 
+                  ? 'linear-gradient(0deg, #ef4444, #dc2626)'
+                  : pushToTalkVuLevel > 50 
+                    ? 'linear-gradient(0deg, #fbbf24, #f59e0b)'
+                    : 'linear-gradient(0deg, #22d3ee, #06b6d4)',
+                borderRadius: '3px',
+                transition: 'height 0.05s ease'
+              }} />
+            </div>
+          </div>
+          
           <IconButton onClick={handleReset} title="Reset All">↺</IconButton>
         </Controls>
       </Header>
 
       <MixerLayout>
-        {/* Mascote Robô AI Animado */}
-        <MascotContainer style={{opacity: mascotEnabled ? 1 : 0.3, flex: '1 1 0'}}>
-          {mascotMessage && mascotEnabled && (
-            <SpeechBubble>
-              {mascotMessage}
-            </SpeechBubble>
-          )}
-          <RobotContainer style={{opacity: mascotEnabled ? 1 : 0.5}}>
-            <MascotAccessory>🤖</MascotAccessory>
-            <RobotAntenna $left />
-            <RobotAntenna $left={false} />
-            <RobotHead $talking={isMascotTalking && mascotEnabled}>
-              <RobotEye $left />
-              <RobotEye $left={false} />
-              <RobotSensor />
-              <RobotSpeaker $talking={isMascotTalking && mascotEnabled} />
-            </RobotHead>
-            <RobotBody />
-            <RobotArm $front $left />
-            <RobotArm $front $left={false} />
-          </RobotContainer>
-          {!mascotEnabled && (
+        {/* Display Tecnológico do Robô AI */}
+        <div style={{ flex: '1 1 0', minWidth: 0 }}>
+          <RobotDisplayContainer>
+            <RobotDisplayHeader>
+              <RobotDisplayTitle>
+                <span>🤖</span> ASSISTENTE AI
+              </RobotDisplayTitle>
+              <RobotStatusIndicator $active={mascotEnabled}>
+                <span>{mascotEnabled ? '●' : '○'}</span>
+                {mascotEnabled ? 'ATIVO' : 'INATIVO'}
+              </RobotStatusIndicator>
+            </RobotDisplayHeader>
+            
+            <RobotViewport>
+              <CircuitPattern />
+              
+              {/* Balão de fala do robô */}
+              {mascotMessage && mascotEnabled && (
+                <RobotSpeechBubble>
+                  {mascotMessage}
+                </RobotSpeechBubble>
+              )}
+              
+              {/* Robô Animado */}
+              <RobotContainer style={{ opacity: mascotEnabled ? 1 : 0.4 }}>
+                <RobotAntenna $left />
+                <RobotAntenna $left={false} />
+                <RobotHead $talking={isMascotTalking && mascotEnabled}>
+                  <RobotEye $left />
+                  <RobotEye $left={false} />
+                  <RobotSpeaker $talking={isMascotTalking && mascotEnabled} />
+                </RobotHead>
+                <RobotBody />
+                <RobotArm $front $left />
+                <RobotArm $front $left={false} />
+              </RobotContainer>
+              
+              {/* Overlay de dados */}
+              <DataOverlay>
+                <span>SYS: {mascotEnabled ? 'OK' : 'OFF'}</span>
+                <span>AI: {isMascotTalking ? 'FALANDO' : 'PRONTO'}</span>
+                <span>LVL: {mascotLevel}</span>
+              </DataOverlay>
+            </RobotViewport>
+            
+            {/* Último comando reconhecido */}
+            {lastVoiceCommand && (
+              <div style={{
+                marginTop: '8px',
+                padding: '6px 10px',
+                background: 'linear-gradient(135deg, rgba(6, 182, 212, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%)',
+                border: '1px solid rgba(6, 182, 212, 0.3)',
+                borderRadius: '8px',
+                textAlign: 'center'
+              }}>
                 <div style={{
-                  position: 'absolute',
-                  top: '50%',
-              left: '50%',
-              transform: 'translate(-50%, -50%)',
-              background: 'rgba(15, 23, 42, 0.9)',
-              border: '2px solid rgba(239, 68, 68, 0.5)',
-              borderRadius: '8px',
-              padding: '8px 16px',
-              color: '#ef4444',
-              fontSize: '0.7rem',
-              fontWeight: 700,
-              textTransform: 'uppercase',
-              letterSpacing: '1px',
-              zIndex: 1001
-            }}>
-              DESLIGADO
-            </div>
-          )}
-        </MascotContainer>
+                  fontSize: '0.55rem',
+                  color: '#64748b',
+                  textTransform: 'uppercase',
+                  letterSpacing: '1px',
+                  marginBottom: '2px'
+                }}>
+                  ÚLTIMO COMANDO
+                </div>
+                <div style={{
+                  fontSize: '0.75rem',
+                  color: '#22d3ee',
+                  fontWeight: '600'
+                }}>
+                  "{lastVoiceCommand}"
+                </div>
+              </div>
+            )}
+          </RobotDisplayContainer>
+        </div>
 
         {/* Atendimento Automático de Pedidos */}
         <div style={{

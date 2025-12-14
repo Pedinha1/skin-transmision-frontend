@@ -657,6 +657,58 @@ const RequestButton = styled.button`
   }
 `;
 
+// Animação para o botão push-to-talk
+const pulseMic = keyframes`
+  0%, 100% { transform: scale(1); box-shadow: 0 0 20px rgba(239, 68, 68, 0.6); }
+  50% { transform: scale(1.05); box-shadow: 0 0 30px rgba(239, 68, 68, 0.8); }
+`;
+
+const PushToTalkButton = styled.button`
+  width: 45px;
+  height: 45px;
+  min-width: 45px;
+  min-height: 45px;
+  border-radius: 50%;
+  background: ${props => props.$active 
+    ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)'
+    : 'linear-gradient(135deg, rgba(30, 41, 59, 0.8) 0%, rgba(15, 23, 42, 0.8) 100%)'
+  };
+  border: 2px solid ${props => props.$active ? '#ef4444' : 'rgba(6, 182, 212, 0.5)'};
+  color: white;
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  box-shadow: ${props => props.$active 
+    ? '0 0 25px rgba(239, 68, 68, 0.7), 0 4px 15px rgba(0, 0, 0, 0.4)'
+    : '0 2px 10px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1)'
+  };
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  flex-shrink: 0;
+  ${props => props.$active ? css`animation: ${pulseMic} 1s infinite;` : ''}
+
+  &:hover:not(:active) {
+    border-color: #22d3ee;
+    box-shadow: 0 0 15px rgba(6, 182, 212, 0.4), 0 4px 12px rgba(0, 0, 0, 0.4);
+  }
+`;
+
+const VoiceCommandDisplay = styled.div`
+  padding: 6px 12px;
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.15) 0%, rgba(6, 182, 212, 0.1) 100%);
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  border-radius: 8px;
+  font-size: 0.7rem;
+  color: #22d3ee;
+  text-align: center;
+  margin-top: 8px;
+  ${css`animation: ${fadeIn} 0.3s ease;`}
+`;
+
 const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 'Ouvinte', onRequestsChange }) => {
   const [activeTab, setActiveTab] = useState('chat');
   const [messages, setMessages] = useState([]);
@@ -678,10 +730,124 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
   const [songTitle, setSongTitle] = useState('');
   const [songArtist, setSongArtist] = useState('');
   const [isConnected, setIsConnected] = useState(false);
+  
+  // Push-to-Talk States (apenas para ouvintes)
+  const [isPushToTalkActive, setIsPushToTalkActive] = useState(false);
+  const [pushToTalkVuLevel, setPushToTalkVuLevel] = useState(0);
+  const [lastVoiceCommand, setLastVoiceCommand] = useState('');
+  const pushToTalkStreamRef = useRef(null);
+  const pushToTalkAudioContextRef = useRef(null);
+  const pushToTalkAnalyserRef = useRef(null);
+  const pushToTalkAnimationRef = useRef(null);
+  const pushToTalkRecognitionRef = useRef(null);
+  
   const chatAreaRef = useRef(null);
   const inputRef = useRef(null);
   const socketRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
+  
+  // Funções Push-to-Talk
+  const startPushToTalk = useCallback(async () => {
+    if (isPushToTalkActive || isDJ) return;
+    
+    try {
+      console.log('🎤 Ouvinte: Iniciando Push-to-Talk...');
+      
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      pushToTalkAudioContextRef.current = audioContext;
+      
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      pushToTalkAnalyserRef.current = analyser;
+      
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: { echoCancellation: true, noiseSuppression: true }
+      });
+      
+      pushToTalkStreamRef.current = stream;
+      
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+      
+      // Iniciar reconhecimento de voz
+      if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'pt-BR';
+        
+        recognition.onresult = (event) => {
+          const last = event.results.length - 1;
+          const command = event.results[last][0].transcript.toLowerCase().trim();
+          
+          if (event.results[last].isFinal && command) {
+            console.log('🎤 Ouvinte comando de voz:', command);
+            setLastVoiceCommand(command);
+            
+            // Enviar como mensagem de chat
+            if (socketRef.current && isConnected) {
+              const message = {
+                id: Date.now(),
+                user: chatUserName.trim() || userName,
+                time: new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                timestamp: new Date().toISOString(),
+                text: `🎤 ${command}`,
+                self: false,
+              };
+              socketRef.current.emit('chat:message', message);
+            }
+          }
+        };
+        
+        recognition.start();
+        pushToTalkRecognitionRef.current = recognition;
+      }
+      
+      // VU Meter
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      const updateVU = () => {
+        if (!pushToTalkStreamRef.current) return;
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+        const average = sum / dataArray.length;
+        setPushToTalkVuLevel(Math.min(100, (average / 255) * 100 * 2));
+        pushToTalkAnimationRef.current = requestAnimationFrame(updateVU);
+      };
+      updateVU();
+      
+      setIsPushToTalkActive(true);
+    } catch (err) {
+      console.error('❌ Erro Push-to-Talk:', err);
+    }
+  }, [isPushToTalkActive, isDJ, chatUserName, userName, isConnected]);
+  
+  const stopPushToTalk = useCallback(() => {
+    if (!isPushToTalkActive) return;
+    
+    if (pushToTalkRecognitionRef.current) {
+      pushToTalkRecognitionRef.current.stop();
+      pushToTalkRecognitionRef.current = null;
+    }
+    
+    if (pushToTalkAnimationRef.current) {
+      cancelAnimationFrame(pushToTalkAnimationRef.current);
+    }
+    
+    if (pushToTalkStreamRef.current) {
+      pushToTalkStreamRef.current.getTracks().forEach(track => track.stop());
+      pushToTalkStreamRef.current = null;
+    }
+    
+    if (pushToTalkAudioContextRef.current) {
+      pushToTalkAudioContextRef.current.close();
+      pushToTalkAudioContextRef.current = null;
+    }
+    
+    setPushToTalkVuLevel(0);
+    setIsPushToTalkActive(false);
+  }, [isPushToTalkActive]);
 
   // Inicializar socket
   useEffect(() => {
@@ -1417,10 +1583,60 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
                 onChange={(e) => setInputValue(e.target.value)}
                 disabled={!isConnected}
               />
+              
+              {/* Push-to-Talk Button - apenas para ouvintes (lado direito) */}
+              {!isDJ && (
+                <>
+                  {/* VU Meter mini */}
+                  <div style={{
+                    width: '6px',
+                    height: '45px',
+                    background: 'rgba(0, 0, 0, 0.4)',
+                    borderRadius: '3px',
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column-reverse',
+                    flexShrink: 0
+                  }}>
+                    <div style={{
+                      width: '100%',
+                      height: `${pushToTalkVuLevel}%`,
+                      background: pushToTalkVuLevel > 80 
+                        ? 'linear-gradient(0deg, #ef4444, #dc2626)'
+                        : pushToTalkVuLevel > 50 
+                          ? 'linear-gradient(0deg, #fbbf24, #f59e0b)'
+                          : 'linear-gradient(0deg, #22d3ee, #06b6d4)',
+                      borderRadius: '3px',
+                      transition: 'height 0.05s ease'
+                    }} />
+                  </div>
+                  
+                  <PushToTalkButton
+                    $active={isPushToTalkActive}
+                    onMouseDown={startPushToTalk}
+                    onMouseUp={stopPushToTalk}
+                    onMouseLeave={stopPushToTalk}
+                    onTouchStart={startPushToTalk}
+                    onTouchEnd={stopPushToTalk}
+                    onTouchCancel={stopPushToTalk}
+                    title="Segure para falar"
+                  >
+                    🎤
+                  </PushToTalkButton>
+                </>
+              )}
+              
               <SendButton type="submit" $disabled={!inputValue.trim() || !isConnected}>
                 <span>➤</span> Enviar
               </SendButton>
             </InputWrapper>
+            
+            {/* Último comando de voz */}
+            {!isDJ && lastVoiceCommand && (
+              <VoiceCommandDisplay>
+                🗣️ "{lastVoiceCommand}"
+              </VoiceCommandDisplay>
+            )}
           </form>
         </InputContainer>
       )}

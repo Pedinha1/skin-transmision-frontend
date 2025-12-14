@@ -50,6 +50,27 @@ const robotBounce = keyframes`
   50% { transform: translateY(-8px) scaleY(0.95); }
 `;
 
+const hologramFlicker = keyframes`
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
+  75% { opacity: 0.95; }
+`;
+
+const circuitPulse = keyframes`
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+`;
+
+const eyeBlink = keyframes`
+  0%, 90%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+`;
+
+const scanLineVertical = keyframes`
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100vh); }
+`;
+
 // Animações para os botões de jingle
 const jingleGlow = keyframes`
   0%, 100% { 
@@ -90,10 +111,8 @@ const jingleShimmer = keyframes`
 `;
 
 const talk = keyframes`
-  0%, 100% { transform: scaleY(1); }
-  25% { transform: scaleY(0.3); }
-  50% { transform: scaleY(1.2); }
-  75% { transform: scaleY(0.5); }
+  0%, 100% { transform: translateX(-50%) scaleY(1); }
+  50% { transform: translateX(-50%) scaleY(0.3); }
 `;
 
 const bubblePop = keyframes`
@@ -193,7 +212,166 @@ const PageContainer = styled.div`
 `;
 
 // Header Profissional para Web Radio
-// Componentes do Segundo Robô
+// ============================================
+// DISPLAY TECNOLÓGICO DO SEGUNDO ROBÔ
+// ============================================
+const RobotDisplayContainer2 = styled.div`
+  width: 100%;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.95) 100%);
+  backdrop-filter: blur(15px);
+  border: 2px solid rgba(6, 182, 212, 0.3);
+  border-radius: 16px;
+  padding: 1rem;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 
+    0 15px 30px rgba(0, 0, 0, 0.4),
+    0 0 25px rgba(6, 182, 212, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  ${css`animation: ${hologramFlicker} 4s ease-in-out infinite;`}
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: 
+      repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(6, 182, 212, 0.03) 2px,
+        rgba(6, 182, 212, 0.03) 4px
+      );
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    top: -100%;
+    left: 0;
+    right: 0;
+    height: 50%;
+    background: linear-gradient(
+      180deg,
+      transparent,
+      rgba(6, 182, 212, 0.1),
+      transparent
+    );
+    ${css`animation: ${scanLineVertical} 3s linear infinite;`}
+    pointer-events: none;
+    z-index: 2;
+  }
+`;
+
+const RobotDisplayHeader2 = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(6, 182, 212, 0.2);
+  position: relative;
+  z-index: 10;
+`;
+
+const RobotDisplayTitle2 = styled.div`
+  color: #f1f5f9;
+  font-weight: 700;
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  
+  span {
+    font-size: 1rem;
+    background: linear-gradient(135deg, #06b6d4 0%, #22d3ee 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+`;
+
+const RobotStatusIndicator2 = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: ${props => props.$active 
+    ? 'linear-gradient(135deg, rgba(6, 182, 212, 0.2) 0%, rgba(34, 211, 238, 0.15) 100%)'
+    : 'rgba(100, 116, 139, 0.2)'};
+  border: 1px solid ${props => props.$active ? 'rgba(6, 182, 212, 0.5)' : 'rgba(100, 116, 139, 0.3)'};
+  border-radius: 15px;
+  font-size: 0.55rem;
+  font-weight: 700;
+  color: ${props => props.$active ? '#22d3ee' : '#94a3b8'};
+  text-transform: uppercase;
+  letter-spacing: 1px;
+`;
+
+const RobotViewport2 = styled.div`
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16/10;
+  background: linear-gradient(135deg, rgba(6, 182, 212, 0.05) 0%, rgba(15, 23, 42, 0.8) 50%, rgba(139, 92, 246, 0.05) 100%);
+  border: 1px solid rgba(6, 182, 212, 0.2);
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  z-index: 10;
+  
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: 
+      radial-gradient(circle at 30% 30%, rgba(6, 182, 212, 0.1) 0%, transparent 50%),
+      radial-gradient(circle at 70% 70%, rgba(139, 92, 246, 0.1) 0%, transparent 50%);
+    pointer-events: none;
+  }
+`;
+
+const CircuitPattern2 = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image: 
+    linear-gradient(90deg, rgba(6, 182, 212, 0.1) 1px, transparent 1px),
+    linear-gradient(rgba(6, 182, 212, 0.1) 1px, transparent 1px);
+  background-size: 15px 15px;
+  ${css`animation: ${circuitPulse} 2s ease-in-out infinite;`}
+  pointer-events: none;
+`;
+
+const DataOverlay2 = styled.div`
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.5rem;
+  color: rgba(6, 182, 212, 0.7);
+  font-family: 'Courier New', monospace;
+  font-weight: 600;
+  letter-spacing: 1px;
+  z-index: 30;
+`;
+
+// Componentes do Segundo Robô (mantidos para compatibilidade)
 const RobotMascotContainer = styled.div`
   position: relative;
   display: flex;
@@ -255,43 +433,41 @@ const RobotToggleButton = styled.button`
 `;
 
 const RobotSpeechBubble = styled.div`
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
   background: linear-gradient(135deg, rgba(6, 182, 212, 0.95) 0%, rgba(34, 211, 238, 0.95) 100%);
   border: 2px solid rgba(255, 255, 255, 0.3);
-  border-radius: 12px;
-  padding: 12px 16px;
-  color: #ffffff;
-  font-size: 0.85rem;
-  font-weight: 600;
+  border-radius: 10px;
+  padding: 6px 12px;
+  color: #0f172a;
+  font-weight: 700;
+  font-size: 0.7rem;
+  max-width: 90%;
   text-align: center;
-  max-width: 250px;
-  box-shadow: 
-    0 4px 20px rgba(6, 182, 212, 0.4),
-    0 0 30px rgba(34, 211, 238, 0.3);
-  position: relative;
-  ${css`animation: ${bubblePop} 0.3s ease-out;`}
+  z-index: 100;
+  box-shadow: 0 4px 15px rgba(6, 182, 212, 0.4);
   
   &::after {
     content: '';
     position: absolute;
-    bottom: -8px;
+    bottom: -6px;
     left: 50%;
     transform: translateX(-50%);
-    width: 0;
-    height: 0;
-    border-left: 8px solid transparent;
-    border-right: 8px solid transparent;
-    border-top: 8px solid rgba(6, 182, 212, 0.95);
+    border: 6px solid transparent;
+    border-top-color: rgba(34, 211, 238, 0.95);
   }
 `;
 
 const RobotContainer2 = styled.div`
   position: relative;
-  width: 168px;
-  height: 192px;
-  margin-top: 10px;
+  width: 120px;
+  height: 140px;
   ${css`animation: ${robotFloat} 3s ease-in-out infinite;`}
   cursor: pointer;
   transition: transform 0.2s;
+  z-index: 20;
   
   &:hover {
     ${css`animation: ${robotPulse} 1.5s ease-in-out infinite;`}
@@ -300,274 +476,178 @@ const RobotContainer2 = styled.div`
 
 const RobotAntenna2 = styled.div`
   position: absolute;
-  top: -36px;
-  left: ${props => props.$left ? '52px' : '96px'};
-  width: 4px;
-  height: 40px;
-  z-index: 5;
-  background: linear-gradient(180deg, 
-    #06b6d4 0%,
-    #22d3ee 50%,
-    #67e8f9 100%
-  );
-  border-radius: 4px;
-  box-shadow: 
-    0 0 15px rgba(6, 182, 212, 0.8),
-    0 0 30px rgba(34, 211, 238, 0.6),
-    inset 0 0 10px rgba(103, 232, 249, 0.5);
-  transform-origin: bottom center;
-  ${css`animation: ${antennaPulse} 2s ease-in-out infinite;`}
-  animation-delay: ${props => props.$left ? '0s' : '0.3s'};
+  top: -24px;
+  left: ${props => props.$left ? '35px' : '70px'};
+  width: 3px;
+  height: 24px;
+  background: linear-gradient(180deg, #06b6d4 0%, #0f172a 100%);
+  border-radius: 2px;
   
-  &::before {
+  &::after {
     content: '';
     position: absolute;
-    top: -8px;
+    top: -6px;
     left: 50%;
     transform: translateX(-50%);
     width: 10px;
     height: 10px;
-    background: radial-gradient(circle, #67e8f9 0%, #22d3ee 50%, #06b6d4 100%);
+    background: ${props => props.$left 
+      ? 'radial-gradient(circle, #06b6d4 0%, #0891b2 100%)'
+      : 'radial-gradient(circle, #22d3ee 0%, #06b6d4 100%)'};
     border-radius: 50%;
-    box-shadow: 
-      0 0 20px rgba(103, 232, 249, 1),
-      0 0 40px rgba(34, 211, 238, 0.8),
-      inset 0 0 10px rgba(255, 255, 255, 0.5);
-    ${css`animation: ${ledBlink} 1.5s ease-in-out infinite;`}
+    box-shadow: 0 0 12px ${props => props.$left ? '#06b6d4' : '#22d3ee'};
+    ${css`animation: ${pulse} 2s ease-in-out infinite;`}
   }
 `;
 
 const RobotHead2 = styled.div`
   position: absolute;
-  top: 16px;
+  top: 8px;
   left: 50%;
   transform: translateX(-50%);
-  width: 112px;
-  height: 108px;
-  background: linear-gradient(135deg, 
-    #1e293b 0%,
-    #334155 25%,
-    #475569 50%,
-    #334155 75%,
-    #1e293b 100%
-  );
-  border-radius: 10px 10px 14px 14px;
+  width: 80px;
+  height: 60px;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
   border: 2px solid #06b6d4;
+  border-radius: 16px;
   box-shadow: 
-    0 0 30px rgba(6, 182, 212, 0.6),
-    0 10px 40px rgba(0, 0, 0, 0.8),
-    0 4px 12px rgba(0, 0, 0, 0.5),
-    inset 0 -10px 25px rgba(0, 0, 0, 0.4),
-    inset 0 8px 20px rgba(6, 182, 212, 0.2),
-    inset -4px -4px 12px rgba(0, 0, 0, 0.3),
-    inset 4px 4px 8px rgba(103, 232, 249, 0.3);
+    0 0 15px rgba(6, 182, 212, 0.4),
+    inset 0 6px 15px rgba(6, 182, 212, 0.2),
+    inset -3px -3px 10px rgba(0, 0, 0, 0.3);
   ${props => props.$talking ? css`animation: ${robotBounce} 0.5s ease-in-out infinite;` : css`animation: none;`}
   position: relative;
   z-index: 3;
   overflow: hidden;
-  
+
   &::before {
     content: '';
     position: absolute;
-    top: 0;
-    left: -100%;
-    width: 100%;
-    height: 100%;
-    background: linear-gradient(90deg, 
-      transparent 0%,
-      rgba(103, 232, 249, 0.3) 50%,
-      transparent 100%
-    );
-    ${props => props.$talking ? css`animation: ${scanLine} 2s linear infinite;` : css`animation: none;`}
+    top: 4px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 80%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.5), transparent);
+    border-radius: 2px;
   }
 `;
 
 const RobotEye2 = styled.div`
   position: absolute;
-  top: 30px;
-  left: ${props => props.$left ? '30px' : '72px'};
-  width: 24px;
-  height: 24px;
-  background: radial-gradient(circle, 
-    #06b6d4 0%,
-    #0ea5e9 40%,
-    #0284c7 70%,
-    #0369a1 100%
-  );
+  top: 20px;
+  left: ${props => props.$left ? '16px' : '48px'};
+  width: 18px;
+  height: 18px;
+  background: radial-gradient(circle, #22d3ee 0%, #06b6d4 50%, #0891b2 100%);
   border-radius: 50%;
-  border: 1px solid #67e8f9;
   box-shadow: 
-    0 0 20px rgba(6, 182, 212, 1),
-    0 0 40px rgba(34, 211, 238, 0.8),
-    0 0 60px rgba(103, 232, 249, 0.5),
-    inset 0 0 15px rgba(103, 232, 249, 0.8),
-    inset 0 0 30px rgba(255, 255, 255, 0.3);
-  ${css`animation: ${ledBlink} 3s infinite;`}
-  z-index: 2;
-  
+    0 0 15px rgba(34, 211, 238, 0.8),
+    inset 2px 2px 4px rgba(255, 255, 255, 0.3);
+  ${css`animation: ${eyeBlink} 4s ease-in-out infinite;`}
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 5px;
+    height: 5px;
+    background: white;
+    border-radius: 50%;
+    opacity: 0.8;
+  }
+
   &::after {
     content: '';
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 14px;
-    height: 14px;
-    background: radial-gradient(circle, 
-      #ffffff 0%,
-      #67e8f9 50%,
-      #22d3ee 100%
-    );
+    width: 6px;
+    height: 6px;
+    background: #0f172a;
     border-radius: 50%;
-    box-shadow: 
-      0 0 15px rgba(255, 255, 255, 1),
-      0 0 30px rgba(103, 232, 249, 0.8);
-    z-index: 1;
   }
 `;
 
 const RobotSensor2 = styled.div`
-  position: absolute;
-  top: 60px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 16px;
-  height: 16px;
-  background: radial-gradient(circle, 
-    #06b6d4 0%,
-    #0ea5e9 30%,
-    #0284c7 60%,
-    #0369a1 100%
-  );
-  border-radius: 50%;
-  border: 1px solid #67e8f9;
-  box-shadow: 
-    0 0 15px rgba(6, 182, 212, 0.8),
-    0 0 30px rgba(34, 211, 238, 0.6),
-    inset 0 0 10px rgba(103, 232, 249, 0.6);
-  z-index: 2;
-  ${css`animation: ${pulse} 2s ease-in-out infinite;`}
-  
-  &::after {
-    content: '';
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 8px;
-    height: 8px;
-    background: #67e8f9;
-    border-radius: 50%;
-    box-shadow: 0 0 10px rgba(103, 232, 249, 1);
-  }
+  display: none;
 `;
 
 const RobotSpeaker2 = styled.div`
   position: absolute;
-  top: 76px;
+  top: 44px;
   left: 50%;
   transform: translateX(-50%);
-  width: ${props => props.$talking ? '48px' : '36px'};
-  height: ${props => props.$talking ? '18px' : '14px'};
-  background: linear-gradient(180deg, 
-    #0f172a 0%,
-    #1e293b 50%,
+  width: 24px;
+  height: 6px;
+  background: linear-gradient(90deg, 
+    #0f172a 0%, 
+    #06b6d4 10%, 
+    #0f172a 20%,
+    #06b6d4 30%,
+    #0f172a 40%,
+    #06b6d4 50%,
+    #0f172a 60%,
+    #06b6d4 70%,
+    #0f172a 80%,
+    #06b6d4 90%,
     #0f172a 100%
   );
-  border: 2px solid #06b6d4;
-  border-radius: 4px;
-  box-shadow: 
-    0 0 15px rgba(6, 182, 212, 0.6),
-    inset 0 0 10px rgba(0, 0, 0, 0.8),
-    inset 0 2px 4px rgba(34, 211, 238, 0.2);
-  z-index: 2;
-  position: relative;
-  overflow: hidden;
-  
-  &::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background-image: 
-      repeating-linear-gradient(0deg, 
-        transparent 0px,
-        transparent 3px,
-        rgba(6, 182, 212, 0.3) 3px,
-        rgba(6, 182, 212, 0.3) 6px
-      );
-  }
-  
+  border-radius: 3px;
+  box-shadow: 0 0 8px rgba(6, 182, 212, 0.5);
   ${props => props.$talking ? css`animation: ${talk} 0.4s ease-in-out infinite;` : css`animation: none;`}
 `;
 
 const RobotBody2 = styled.div`
   position: absolute;
-  top: 102px;
+  top: 72px;
   left: 50%;
   transform: translateX(-50%);
-  width: 98px;
-  height: 78px;
-  background: linear-gradient(135deg, 
-    #1e293b 0%,
-    #334155 25%,
-    #475569 50%,
-    #334155 75%,
-    #1e293b 100%
-  );
-  border-radius: 6px 6px 10px 10px;
+  width: 56px;
+  height: 48px;
+  background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
   border: 2px solid #06b6d4;
+  border-radius: 10px;
   box-shadow: 
-    0 0 25px rgba(6, 182, 212, 0.5),
-    0 8px 30px rgba(0, 0, 0, 0.6),
-    0 3px 10px rgba(0, 0, 0, 0.4),
-    inset 0 -6px 18px rgba(0, 0, 0, 0.4),
-    inset 0 5px 15px rgba(6, 182, 212, 0.2),
-    inset -3px -3px 10px rgba(0, 0, 0, 0.3),
-    inset 3px 3px 8px rgba(103, 232, 249, 0.2);
+    0 0 12px rgba(6, 182, 212, 0.3),
+    inset 0 4px 8px rgba(6, 182, 212, 0.1);
   position: relative;
+
+  &::before {
+    content: '⚡';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 1.2rem;
+    opacity: 0.7;
+  }
 `;
 
 const RobotArm2 = styled.div`
   position: absolute;
-  top: ${props => props.$front ? '156px' : '162px'};
-  left: ${props => props.$left ? '24px' : '114px'};
-  width: 18px;
-  height: 40px;
-  background: linear-gradient(180deg, 
-    #334155 0%,
-    #475569 50%,
-    #334155 100%
-  );
-  border-radius: 4px 4px 6px 6px;
+  top: ${props => props.$front ? '82px' : '86px'};
+  left: ${props => props.$left ? '12px' : '94px'};
+  width: 8px;
+  height: 28px;
+  background: linear-gradient(180deg, #0f172a 0%, #06b6d4 50%, #0f172a 100%);
   border: 2px solid #06b6d4;
-  box-shadow: 
-    0 0 15px rgba(6, 182, 212, 0.4),
-    0 5px 15px rgba(0, 0, 0, 0.5),
-    0 2px 6px rgba(0, 0, 0, 0.3),
-    inset 0 -4px 10px rgba(0, 0, 0, 0.3),
-    inset 0 3px 8px rgba(34, 211, 238, 0.2);
-  
-  &::before {
+  border-radius: 4px;
+  transform: ${props => props.$left ? 'rotate(15deg)' : 'rotate(-15deg)'};
+  box-shadow: 0 0 8px rgba(6, 182, 212, 0.3);
+
+  &::after {
     content: '';
     position: absolute;
-    bottom: -4px;
+    bottom: -6px;
     left: 50%;
     transform: translateX(-50%);
-    width: 16px;
-    height: 16px;
-    background: radial-gradient(circle, 
-      #475569 0%,
-      #334155 50%,
-      #1e293b 100%
-    );
+    width: 12px;
+    height: 12px;
+    background: radial-gradient(circle, #06b6d4 0%, #0891b2 100%);
     border-radius: 50%;
-    border: 2px solid #06b6d4;
-    box-shadow: 
-      0 0 10px rgba(6, 182, 212, 0.5),
-      inset 0 0 8px rgba(0, 0, 0, 0.5);
+    border: 2px solid #22d3ee;
   }
 `;
 
@@ -8999,11 +9079,81 @@ const DJPanel = () => {
                  // Callback quando o mascote começar a falar
                  console.log('🤖 Mascote começou a falar - volume da música reduzido');
                }}
-               onMascotStopSpeaking={() => {
-                 // Callback quando o mascote parar de falar
-                 console.log('🤖 Mascote parou de falar - volume da música restaurado');
-               }}
-             />
+onMascotStopSpeaking={() => {
+                // Callback quando o mascote parar de falar
+                console.log('🤖 Mascote parou de falar - volume da música restaurado');
+              }}
+              isBroadcasting={isBroadcasting}
+              onDJCommand={async (command) => {
+                console.log('🎙️ Executando comando DJ:', command);
+                switch (command) {
+                  case 'start_broadcast':
+                    if (!isBroadcasting) {
+                      try {
+                        const audioContext = getGlobalAudioContext(globalAudioContextRef);
+                        if (audioContext.state === 'suspended') {
+                          await audioContext.resume();
+                        }
+                        setIsBroadcasting(true);
+                        isBroadcastingRef.current = true;
+                        console.log('✅ Transmissão iniciada por comando de voz');
+                      } catch (error) {
+                        console.error('Erro ao iniciar transmissão:', error);
+                      }
+                    }
+                    break;
+                  case 'stop_broadcast':
+                    if (isBroadcasting) {
+                      setIsBroadcasting(false);
+                      isBroadcastingRef.current = false;
+                      console.log('✅ Transmissão parada por comando de voz');
+                    }
+                    break;
+                  case 'enable_autodj':
+                    if (!autoDJ) {
+                      setAutoDJ(true);
+                      console.log('✅ Auto DJ ativado por comando de voz');
+                    }
+                    break;
+                  case 'disable_autodj':
+                    if (autoDJ) {
+                      setAutoDJ(false);
+                      console.log('✅ Auto DJ desativado por comando de voz');
+                    }
+                    break;
+                  case 'enable_auto_search':
+                    // Funcionalidade de busca automática não implementada separadamente
+                    console.log('ℹ️ Busca automática está integrada ao sistema de pedidos');
+                    break;
+                  case 'disable_auto_search':
+                    // Funcionalidade de busca automática não implementada separadamente
+                    console.log('ℹ️ Busca automática está integrada ao sistema de pedidos');
+                    break;
+                  case 'next_track':
+                    playNextTrack();
+                    console.log('✅ Próxima música por comando de voz');
+                    break;
+                  case 'previous_track':
+                    playPreviousTrack();
+                    console.log('✅ Música anterior por comando de voz');
+                    break;
+                  case 'play':
+                    if (!isPlaying && currentTrackId) {
+                      togglePlay();
+                      console.log('✅ Play por comando de voz');
+                    }
+                    break;
+                  case 'pause':
+                    if (isPlaying) {
+                      togglePlay();
+                      console.log('✅ Pause por comando de voz');
+                    }
+                    break;
+                  default:
+                    console.log('Comando não reconhecido:', command);
+                }
+              }}
+            />
            </div>
            
            {/* Jingles abaixo do Digital Mixer - 8 por linha */}
