@@ -1081,9 +1081,12 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
 
   // Configurar listeners de eventos
   useEffect(() => {
-    if (!socketRef.current) return;
+    if (!socketRef.current) {
+      console.warn('⚠️ [ChatPanel] Socket não disponível para configurar listeners');
+      return;
+    }
 
-    console.log('ChatPanel: Configurando listeners. isDJ:', isDJ);
+    console.log('✅ [ChatPanel] Configurando listeners. isDJ:', isDJ, 'Socket conectado:', socketRef.current.connected);
 
     const handleMessage = (message) => {
       console.log('📥 [ChatPanel] ========== MENSAGEM RECEBIDA ==========');
@@ -1211,23 +1214,70 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
       }
     };
 
-    socketRef.current.on('chat:message', handleMessage);
-    socketRef.current.on('chat:request', handleRequest);
-    socketRef.current.on('chat:request:accepted', handleRequestAccepted);
-    socketRef.current.on('chat:request:rejected', handleRequestRejected);
-    socketRef.current.on('chat:request:executed', handleRequestExecuted);
-    socketRef.current.on('chat:history', handleHistory);
-    socketRef.current.on('chat:requests', handleRequests);
-    socketRef.current.on('chat:request:sent', handleRequestSent);
-    socketRef.current.on('chat:cleared', handleChatCleared);
-    socketRef.current.on('server:restarted', handleServerRestarted);
+    // Configurar listeners apenas se o socket estiver conectado
+    if (socketRef.current.connected) {
+      console.log('✅ [ChatPanel] Socket conectado, registrando listeners...');
+      
+      socketRef.current.on('chat:message', handleMessage);
+      socketRef.current.on('chat:request', handleRequest);
+      socketRef.current.on('chat:request:accepted', handleRequestAccepted);
+      socketRef.current.on('chat:request:rejected', handleRequestRejected);
+      socketRef.current.on('chat:request:executed', handleRequestExecuted);
+      socketRef.current.on('chat:history', handleHistory);
+      socketRef.current.on('chat:requests', handleRequests);
+      socketRef.current.on('chat:request:sent', handleRequestSent);
+      socketRef.current.on('chat:cleared', handleChatCleared);
+      socketRef.current.on('server:restarted', handleServerRestarted);
 
-    // Carregar histórico
-    socketRef.current.emit('chat:history');
-    socketRef.current.emit('chat:requests');
+      // Carregar histórico e pedidos
+      console.log('📥 [ChatPanel] Solicitando histórico e pedidos do servidor...');
+      socketRef.current.emit('chat:history');
+      socketRef.current.emit('chat:requests');
+    } else {
+      console.warn('⚠️ [ChatPanel] Socket não conectado, aguardando conexão...');
+      // Aguardar conexão antes de configurar listeners
+      const onConnect = () => {
+        console.log('✅ [ChatPanel] Socket conectado, registrando listeners...');
+        
+        socketRef.current.on('chat:message', handleMessage);
+        socketRef.current.on('chat:request', handleRequest);
+        socketRef.current.on('chat:request:accepted', handleRequestAccepted);
+        socketRef.current.on('chat:request:rejected', handleRequestRejected);
+        socketRef.current.on('chat:request:executed', handleRequestExecuted);
+        socketRef.current.on('chat:history', handleHistory);
+        socketRef.current.on('chat:requests', handleRequests);
+        socketRef.current.on('chat:request:sent', handleRequestSent);
+        socketRef.current.on('chat:cleared', handleChatCleared);
+        socketRef.current.on('server:restarted', handleServerRestarted);
+
+        // Carregar histórico e pedidos
+        console.log('📥 [ChatPanel] Solicitando histórico e pedidos do servidor...');
+        socketRef.current.emit('chat:history');
+        socketRef.current.emit('chat:requests');
+      };
+      
+      socketRef.current.on('connect', onConnect);
+      
+      return () => {
+        if (socketRef.current) {
+          socketRef.current.off('connect', onConnect);
+          socketRef.current.off('chat:message', handleMessage);
+          socketRef.current.off('chat:request', handleRequest);
+          socketRef.current.off('chat:request:accepted', handleRequestAccepted);
+          socketRef.current.off('chat:request:rejected', handleRequestRejected);
+          socketRef.current.off('chat:request:executed', handleRequestExecuted);
+          socketRef.current.off('chat:history', handleHistory);
+          socketRef.current.off('chat:requests', handleRequests);
+          socketRef.current.off('chat:request:sent', handleRequestSent);
+          socketRef.current.off('chat:cleared', handleChatCleared);
+          socketRef.current.off('server:restarted', handleServerRestarted);
+        }
+      };
+    }
 
     return () => {
       if (socketRef.current) {
+        console.log('🧹 [ChatPanel] Removendo listeners...');
         socketRef.current.off('chat:message', handleMessage);
         socketRef.current.off('chat:request', handleRequest);
         socketRef.current.off('chat:request:accepted', handleRequestAccepted);
@@ -1240,7 +1290,7 @@ const ChatPanel = ({ tracks = [], socket, isDJ = false, onPlayTrack, userName = 
         socketRef.current.off('server:restarted', handleServerRestarted);
       }
     };
-  }, [isDJ]); // Removido isConnected das dependências para evitar loop infinito
+  }, [isDJ, isConnected]); // Incluir estado de conexão nas dependências
 
   // Auto-scroll
   useEffect(() => {
