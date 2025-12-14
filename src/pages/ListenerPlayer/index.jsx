@@ -782,87 +782,163 @@ const ListenerPlayer = () => {
             if (audioRef.current) {
               // Limpar qualquer stream anterior
               audioRef.current.pause();
-              // Não definir src como vazio - isso causa erro
-              // Vamos definir o MediaSource diretamente
+              
+              // Limpar handlers anteriores se existirem
+              if (socketRef.current) {
+                socketRef.current.off('audio:chunk');
+              }
               
               // Usar MediaSource API para streaming contínuo
               if ('MediaSource' in window) {
                 const mimeType = 'audio/webm;codecs=opus';
                 if (MediaSource.isTypeSupported(mimeType)) {
+                  // Limpar MediaSource anterior se existir
+                  if (audioRef.current.src) {
+                    try {
+                      URL.revokeObjectURL(audioRef.current.src);
+                    } catch (e) {
+                      // Ignorar erro
+                    }
+                  }
+                  
                   const mediaSource = new MediaSource();
                   const url = URL.createObjectURL(mediaSource);
                   audioRef.current.src = url;
                   
                   let sourceBuffer = null;
                   const audioChunksQueue = [];
+                  let isPlayingStarted = false;
                   
-                  mediaSource.addEventListener('sourceopen', () => {
+                  // Handler para receber chunks de áudio (definido antes do sourceopen)
+                  const audioChunkHandler = (chunkData) => {
                     try {
-                      sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-                      console.log('✅ MediaSource aberto, pronto para receber chunks');
+                      if (!chunkData || !chunkData.data) {
+                        console.warn('⚠️ Chunk recebido sem dados');
+                        return;
+                      }
                       
-                      // Processar fila de chunks
-                      const processQueue = () => {
-                        if (sourceBuffer && !sourceBuffer.updating && audioChunksQueue.length > 0) {
-                          const chunk = audioChunksQueue.shift();
+                      if (!sourceBuffer) {
+                        console.warn('⚠️ SourceBuffer ainda não está pronto, adicionando à fila');
+                        // Tentar converter e adicionar à fila mesmo sem sourceBuffer
+                        try {
+                          const binaryString = atob(chunkData.data);
+                          const bytes = new Uint8Array(binaryString.length);
+                          for (let i = 0; i < binaryString.length; i++) {
+                            bytes[i] = binaryString.charCodeAt(i);
+                          }
+                          audioChunksQueue.push(bytes.buffer);
+                        } catch (e) {
+                          console.error('❌ Erro ao converter chunk para fila:', e);
+                        }
+                        return;
+                      }
+                      
+                      // Converter base64 para ArrayBuffer
+                      const binaryString = atob(chunkData.data);
+                      const bytes = new Uint8Array(binaryString.length);
+                      for (let i = 0; i < binaryString.length; i++) {
+                        bytes[i] = binaryString.charCodeAt(i);
+                      }
+                      
+                      // Verificar se o sourceBuffer está pronto
+                      if (sourceBuffer.readyState === 'open') {
+                        if (!sourceBuffer.updating) {
                           try {
-                            sourceBuffer.appendBuffer(chunk);
+                            sourceBuffer.appendBuffer(bytes.buffer);
+                            console.log('✅ Chunk adicionado ao buffer:', bytes.buffer.byteLength, 'bytes');
                           } catch (err) {
                             console.error('❌ Erro ao adicionar buffer:', err);
+                            // Adicionar à fila se falhar
+                            audioChunksQueue.push(bytes.buffer);
                           }
+                        } else {
+                          audioChunksQueue.push(bytes.buffer);
                         }
-                      };
-                      
-                      sourceBuffer.addEventListener('updateend', processQueue);
-                      sourceBuffer.addEventListener('error', (e) => {
-                        console.error('❌ Erro no SourceBuffer:', e);
-                      });
-                      
-                      // Handler para receber chunks de áudio
-                      const audioChunkHandler = (chunkData) => {
-                        try {
-                          if (chunkData.data && sourceBuffer) {
-                            // Converter base64 para ArrayBuffer
-                            const binaryString = atob(chunkData.data);
-                            const bytes = new Uint8Array(binaryString.length);
-                            for (let i = 0; i < binaryString.length; i++) {
-                              bytes[i] = binaryString.charCodeAt(i);
+                        
+                        // Iniciar reprodução quando tiver dados suficientes
+                        if (!isPlayingStarted && audioRef.current && mediaSource.readyState === 'open') {
+                          // Aguardar um pouco para ter dados suficientes
+                          setTimeout(() => {
+                            if (audioRef.current && !audioRef.current.paused) {
+                              return; // Já está tocando
                             }
-                            
-                            if (sourceBuffer.readyState === 'open') {
-                              if (!sourceBuffer.updating) {
-                                sourceBuffer.appendBuffer(bytes.buffer);
-                              } else {
-                                audioChunksQueue.push(bytes.buffer);
-                              }
-                              
-                              // Iniciar reprodução quando tiver dados
-                              if (audioRef.current.paused && mediaSource.readyState === 'open') {
-                                audioRef.current.play().catch(err => {
-                                  console.warn('⚠️ Erro ao iniciar reprodução:', err);
-                                });
-                              }
-                              
+                            audioRef.current.play().then(() => {
+                              console.log('✅ Reprodução iniciada');
+                              isPlayingStarted = true;
                               setConnectionStatus('connected');
                               setStatus('Transmissão ao vivo');
                               setIsPlaying(true);
+                            }).catch(err => {
+                              console.warn('⚠️ Erro ao iniciar reprodução:', err);
+                            });
+                          }, 500);
+                        }
+                      } else {
+                        console.warn('⚠️ SourceBuffer não está aberto, estado:', sourceBuffer.readyState);
+                        audioChunksQueue.push(bytes.buffer);
+                      }
+                    } catch (error) {
+                      console.error('❌ Erro ao processar chunk:', error);
+                    }
+                  };
+                  
+                  // Registrar handler ANTES de abrir o MediaSource
+                  socketRef.current.on('audio:chunk', audioChunkHandler);
+                  console.log('✅ Handler de audio:chunk registrado');
+                  
+                  mediaSource.addEventListener('sourceopen', () => {
+                    try {
+                      if (mediaSource.sourceBuffers.length === 0) {
+                        sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+                        console.log('✅ MediaSource aberto, SourceBuffer criado');
+                        
+                        // Processar fila de chunks pendentes
+                        const processQueue = () => {
+                          if (sourceBuffer && !sourceBuffer.updating && audioChunksQueue.length > 0) {
+                            const chunk = audioChunksQueue.shift();
+                            try {
+                              sourceBuffer.appendBuffer(chunk);
+                              console.log('✅ Chunk da fila adicionado:', chunk.byteLength, 'bytes');
+                            } catch (err) {
+                              console.error('❌ Erro ao adicionar buffer da fila:', err);
+                              // Recolocar na fila
+                              audioChunksQueue.unshift(chunk);
                             }
                           }
-                        } catch (error) {
-                          console.error('❌ Erro ao processar chunk:', error);
-                        }
-                      };
-                      
-                      socketRef.current.on('audio:chunk', audioChunkHandler);
-                      
-                      // Limpar handler quando desconectar
-                      socketRef.current.on('broadcaster_left', () => {
-                        socketRef.current.off('audio:chunk', audioChunkHandler);
-                      });
-                      
-                      console.log('✅ Preparado para receber chunks de áudio via Socket.IO');
+                        };
+                        
+                        sourceBuffer.addEventListener('updateend', processQueue);
+                        sourceBuffer.addEventListener('error', (e) => {
+                          console.error('❌ Erro no SourceBuffer:', e);
+                        });
+                        
+                        // Processar fila inicial
+                        processQueue();
+                      }
                     } catch (error) {
                       console.error('❌ Erro ao configurar MediaSource:', error);
+                    }
+                  });
+                  
+                  mediaSource.addEventListener('error', (e) => {
+                    console.error('❌ Erro no MediaSource:', e);
+                    setConnectionStatus('error');
+                    setStatus('Erro no stream de áudio');
+                  });
+                  
+                  // Limpar handler quando desconectar
+                  socketRef.current.on('broadcaster_left', () => {
+                    console.log('🛑 Broadcaster desconectado, limpando handlers');
+                    socketRef.current.off('audio:chunk', audioChunkHandler);
+                    if (audioRef.current) {
+                      audioRef.current.pause();
+                    }
+                    if (url) {
+                      try {
+                        URL.revokeObjectURL(url);
+                      } catch (e) {
+                        // Ignorar
+                      }
                     }
                   });
                   
