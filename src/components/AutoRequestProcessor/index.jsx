@@ -375,11 +375,12 @@ const StatusValue = styled.span`
 
 const ActivityLog = styled.div`
   margin-top: 16px;
-  flex: 1;
-  min-height: 0;
+  height: 130px; /* Altura fixa para mostrar exatamente 2 itens (65px cada + gap) */
+  min-height: 130px;
+  max-height: 130px;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 14px;
+  padding: 8px 14px;
   background: 
     linear-gradient(180deg, rgba(0, 10, 20, 0.95) 0%, rgba(0, 0, 0, 0.98) 100%),
     repeating-linear-gradient(
@@ -449,8 +450,13 @@ const LogEntry = styled.div`
     if (props.$type === 'info') return '#00ffff';
     return '#00cccc';
   }};
-  padding: 10px 12px;
+  padding: 8px 12px;
   border-radius: 4px;
+  min-height: 55px; /* Altura mínima para cada entrada */
+  max-height: 55px; /* Altura máxima para cada entrada */
+  flex-shrink: 0; /* Não encolher */
+  display: flex;
+  align-items: center;
   background: ${props => {
     if (props.$type === 'success') return 'linear-gradient(90deg, rgba(0, 255, 0, 0.05) 0%, rgba(0, 0, 0, 0.5) 100%)';
     if (props.$type === 'error') return 'linear-gradient(90deg, rgba(255, 68, 68, 0.05) 0%, rgba(0, 0, 0, 0.5) 100%)';
@@ -534,6 +540,7 @@ const AutoRequestProcessor = ({
   const requestsRef = useRef(requests);
   const tracksRef = useRef(tracks);
   const processedRequestsRef = useRef(new Set());
+  const activityLogRef = useRef(null); // Ref para o container do log
 
   // Atualizar refs
   useEffect(() => {
@@ -762,6 +769,10 @@ const AutoRequestProcessor = ({
           // Tentar buscar e baixar da internet se a função estiver disponível
           if (onDownloadAndAddMusic) {
             try {
+              console.log('🌐 [AutoRequestProcessor] Iniciando busca e download na internet...');
+              console.log('🌐 [AutoRequestProcessor] Música:', request.song);
+              console.log('🌐 [AutoRequestProcessor] Artista:', request.artist || 'N/A');
+              
               setActivityLog(prev => [
                 {
                   id: Date.now(),
@@ -773,13 +784,22 @@ const AutoRequestProcessor = ({
               ]);
               
               // Chamar função para buscar e baixar da internet
+              console.log('📞 [AutoRequestProcessor] Chamando onDownloadAndAddMusic...');
               const downloadResult = await onDownloadAndAddMusic(request.song, request.artist, request.id);
               
+              console.log('📥 [AutoRequestProcessor] Resultado do download:', {
+                success: downloadResult?.success,
+                message: downloadResult?.message,
+                hasTrack: !!downloadResult?.track
+              });
+              
               if (downloadResult && downloadResult.success) {
-                console.log('✅ Música baixada da internet com sucesso:', downloadResult.track);
+                console.log('✅ [AutoRequestProcessor] Música baixada da internet com sucesso!');
+                console.log('✅ [AutoRequestProcessor] Track:', downloadResult.track?.name || downloadResult.track?.title);
                 
                 // Aceitar o pedido
                 if (socket && socket.connected) {
+                  console.log('✅ [AutoRequestProcessor] Aceitando pedido no servidor...');
                   socket.emit('chat:request:accept', request.id);
                 }
                 
@@ -796,11 +816,35 @@ const AutoRequestProcessor = ({
                 
                 return; // Sucesso - não rejeitar
               } else {
-                console.log('❌ Não foi possível baixar da internet:', downloadResult?.message || 'Erro desconhecido');
+                console.error('❌ [AutoRequestProcessor] Não foi possível baixar da internet');
+                console.error('❌ [AutoRequestProcessor] Erro:', downloadResult?.message || 'Erro desconhecido');
+                
+                setActivityLog(prev => [
+                  {
+                    id: Date.now(),
+                    message: `❌ Erro ao baixar ${request.song}${request.artist ? ` - ${request.artist}` : ''}: ${downloadResult?.message || 'Erro desconhecido'}`,
+                    type: 'error',
+                    time: new Date().toLocaleTimeString('pt-BR')
+                  },
+                  ...prev.slice(0, 9)
+                ]);
               }
             } catch (downloadError) {
-              console.error('❌ Erro ao tentar baixar da internet:', downloadError);
+              console.error('❌ [AutoRequestProcessor] Erro ao tentar baixar da internet:', downloadError);
+              console.error('❌ [AutoRequestProcessor] Stack:', downloadError.stack);
+              
+              setActivityLog(prev => [
+                {
+                  id: Date.now(),
+                  message: `❌ Erro ao baixar ${request.song}: ${downloadError.message || 'Erro desconhecido'}`,
+                  type: 'error',
+                  time: new Date().toLocaleTimeString('pt-BR')
+                },
+                ...prev.slice(0, 9)
+              ]);
             }
+          } else {
+            console.warn('⚠️ [AutoRequestProcessor] Função onDownloadAndAddMusic não disponível');
           }
           
           // Se não conseguiu baixar da internet, rejeitar pedido
@@ -847,6 +891,14 @@ const AutoRequestProcessor = ({
       setActivityLog([]);
     }
   }, [isActive]);
+
+  // Auto-scroll para mostrar sempre o item mais recente
+  useEffect(() => {
+    if (activityLogRef.current && activityLog.length > 0) {
+      // Scroll para o topo (item mais recente está no topo após reverse)
+      activityLogRef.current.scrollTop = 0;
+    }
+  }, [activityLog]);
 
   // Calcular taxa de sucesso
   const successRate = stats.processed > 0 
@@ -946,7 +998,7 @@ const AutoRequestProcessor = ({
           </StatusContainer>
 
           {activityLog.length > 0 && (
-            <ActivityLog>
+            <ActivityLog ref={activityLogRef}>
               {activityLog.length === 0 ? (
                 <div style={{
                   padding: '20px',
@@ -960,7 +1012,7 @@ const AutoRequestProcessor = ({
                   [Aguardando atividade...]
                 </div>
               ) : (
-                activityLog.map(log => (
+                activityLog.slice().reverse().map(log => (
                   <LogEntry key={log.id} $type={log.type}>
                     <span style={{ 
                       color: '#00aaaa', 

@@ -1726,30 +1726,63 @@ const ListenerPlayer = () => {
                           
                           setConnectionStatus('connected');
                     
+                    // Detectar se é dispositivo móvel
+                    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+                    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+                    
+                    console.log('📱 [Listener] Dispositivo detectado:', { isMobile, isIOS, userAgent: navigator.userAgent });
+                    
                     // Se o usuário já deu permissão antes, tentar reproduzir automaticamente
                     if (hasUserGivenPermissionRef.current) {
                       console.log('🔄 Usuário já deu permissão - tentando reproduzir automaticamente...');
                       setNeedsManualPlay(false);
-                          setStatus('Transmissão ao vivo');
+                      setStatus('Transmissão ao vivo');
                       
                       // Tentar reproduzir automaticamente após um pequeno delay
+                      // Em dispositivos móveis, usar delay maior
+                      const delay = isMobile ? 1000 : 500;
+                      
                       setTimeout(async () => {
                         if (audioRef.current && audioRef.current.paused) {
                           try {
+                            // Em iOS, garantir que o contexto de áudio esteja ativo
+                            if (isIOS) {
+                              const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                              if (audioContext.state === 'suspended') {
+                                await audioContext.resume();
+                              }
+                            }
+                            
+                            // Tentar reproduzir
                             await audioRef.current.play();
-                          setIsPlaying(true);
+                            setIsPlaying(true);
                             console.log('✅ Áudio reproduzido automaticamente (usuário já deu permissão)');
-                        } catch (err) {
+                            
+                            // Verificar após 1 segundo se está realmente tocando
+                            setTimeout(() => {
+                              if (audioRef.current && audioRef.current.paused) {
+                                console.warn('⚠️ Áudio pausado após tentativa de reprodução - pode precisar de interação do usuário');
+                                setNeedsManualPlay(true);
+                                setStatus('Transmissão ao vivo - Clique em Reproduzir');
+                              }
+                            }, 1000);
+                          } catch (err) {
                             console.warn('⚠️ Não foi possível reproduzir automaticamente:', err);
                             // Se falhar, mostrar botão novamente
                             setNeedsManualPlay(true);
                             setStatus('Transmissão ao vivo - Clique em Reproduzir');
+                          }
                         }
-                        }
-                      }, 500);
+                      }, delay);
+                    } else {
+                      // Em dispositivos móveis, sempre mostrar botão de play
+                      if (isMobile) {
+                        setNeedsManualPlay(true);
+                        setStatus('Transmissão ao vivo - Toque para Reproduzir');
                       } else {
-                      setStatus('Transmissão ao vivo - Clique em Reproduzir');
-                      setNeedsManualPlay(true);
+                        setStatus('Transmissão ao vivo - Clique em Reproduzir');
+                        setNeedsManualPlay(true);
+                      }
                     }
                     
                     setIsLive(true);
@@ -1800,21 +1833,43 @@ const ListenerPlayer = () => {
                         audioRef.current.volume = finalVolume;
                         console.log('🎵 Stream configurado a partir do receiver');
                         
+                        // Detectar se é dispositivo móvel
+                        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+                        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+                        
                         // Se o usuário já deu permissão, tentar reproduzir automaticamente
                         if (hasUserGivenPermissionRef.current) {
+                          const delay = isMobile ? 1000 : 500;
+                          
                           setTimeout(async () => {
                             if (audioRef.current && audioRef.current.paused) {
                               try {
+                                // Em iOS, garantir que o contexto de áudio esteja ativo
+                                if (isIOS) {
+                                  const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                                  if (audioContext.state === 'suspended') {
+                                    await audioContext.resume();
+                                  }
+                                }
+                                
                                 await audioRef.current.play();
                                 setIsPlaying(true);
                                 setNeedsManualPlay(false);
                                 console.log('✅ Áudio reproduzido automaticamente a partir do receiver');
-                    } catch (err) {
+                                
+                                // Verificar após 1 segundo se está realmente tocando
+                                setTimeout(() => {
+                                  if (audioRef.current && audioRef.current.paused) {
+                                    console.warn('⚠️ Áudio pausado após tentativa de reprodução');
+                                    setNeedsManualPlay(true);
+                                  }
+                                }, 1000);
+                              } catch (err) {
                                 console.warn('⚠️ Não foi possível reproduzir automaticamente:', err);
                                 setNeedsManualPlay(true);
                               }
                             }
-                          }, 500);
+                          }, delay);
                         } else {
                           setNeedsManualPlay(true);
                         }
@@ -2731,15 +2786,19 @@ const ListenerPlayer = () => {
   const handleManualPlay = async () => {
     try {
       if (!audioRef.current) {
-      alert('Aguardando transmissão...');
-      return;
-    }
+        alert('Aguardando transmissão...');
+        return;
+      }
       
       // Verificar se há src (MediaSource URL) ou srcObject
       if (!audioRef.current.src && !audioRef.current.srcObject) {
         alert('Aguardando transmissão...');
         return;
       }
+      
+      // Detectar dispositivo móvel
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
       
       // Log detalhado antes de reproduzir
       console.log('🎵 Estado antes de reproduzir:', {
@@ -2748,8 +2807,23 @@ const ListenerPlayer = () => {
         paused: audioRef.current.paused,
         muted: audioRef.current.muted,
         volume: audioRef.current.volume,
-        readyState: audioRef.current.readyState
+        readyState: audioRef.current.readyState,
+        isMobile,
+        isIOS
       });
+      
+      // Em iOS, garantir que o contexto de áudio esteja ativo
+      if (isIOS) {
+        try {
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          if (audioContext.state === 'suspended') {
+            await audioContext.resume();
+            console.log('✅ Contexto de áudio iOS ativado');
+          }
+        } catch (e) {
+          console.warn('⚠️ Erro ao ativar contexto de áudio iOS:', e);
+        }
+      }
       
       // Verificar tracks no srcObject
       if (audioRef.current.srcObject) {
@@ -2763,9 +2837,22 @@ const ListenerPlayer = () => {
             enabled: track.enabled,
             readyState: track.readyState
           });
+          
+          // Garantir que os tracks estejam habilitados
+          if (!track.enabled) {
+            track.enabled = true;
+            console.log('✅ Track habilitado:', track.id);
+          }
         });
-    }
-    
+      }
+      
+      // Garantir que o elemento não está muted
+      if (audioRef.current.muted) {
+        audioRef.current.muted = false;
+        console.log('✅ Elemento de áudio desmutado');
+      }
+      
+      // Tentar reproduzir
       await audioRef.current.play();
       
       // Log após reproduzir
@@ -2826,19 +2913,49 @@ const ListenerPlayer = () => {
 
   const togglePlayPause = useCallback(async () => {
     try {
-    if (!audioRef.current) {
-      console.warn('⚠️ AudioRef não disponível');
-      return;
-    }
-    
+      if (!audioRef.current) {
+        console.warn('⚠️ AudioRef não disponível');
+        return;
+      }
+      
       // Verificar se há src (MediaSource URL) ou srcObject
       if (!audioRef.current.src && !audioRef.current.srcObject) {
-      console.warn('⚠️ Nenhum stream disponível');
-      alert('Aguardando transmissão...');
-      return;
-    }
+        console.warn('⚠️ Nenhum stream disponível');
+        alert('Aguardando transmissão...');
+        return;
+      }
+      
+      // Detectar dispositivo móvel
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
       
       if (audioRef.current.paused) {
+        // Em iOS, garantir que o contexto de áudio esteja ativo
+        if (isIOS) {
+          try {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioContext.state === 'suspended') {
+              await audioContext.resume();
+            }
+          } catch (e) {
+            console.warn('⚠️ Erro ao ativar contexto de áudio iOS:', e);
+          }
+        }
+        
+        // Garantir que o elemento não está muted
+        if (audioRef.current.muted) {
+          audioRef.current.muted = false;
+        }
+        
+        // Garantir que os tracks estejam habilitados
+        if (audioRef.current.srcObject) {
+          const tracks = audioRef.current.srcObject.getTracks();
+          tracks.forEach(track => {
+            if (!track.enabled) {
+              track.enabled = true;
+            }
+          });
+        }
+        
         await audioRef.current.play();
         setIsPlaying(true);
         setNeedsManualPlay(false);
@@ -2869,6 +2986,7 @@ const ListenerPlayer = () => {
       if (isMounted) {
         setIsPlaying(prev => prev ? prev : true);
         setNeedsManualPlay(false);
+        hasUserGivenPermissionRef.current = true;
         console.log('▶️ Áudio iniciado');
       }
     };
@@ -2886,6 +3004,20 @@ const ListenerPlayer = () => {
         console.log('⏹ Áudio finalizado');
       }
     };
+    
+    // Monitorar se o áudio parou de tocar em dispositivos móveis
+    const checkAudioPlaying = setInterval(() => {
+      if (audio && audio.srcObject && audio.paused && isLive && connectionStatus === 'connected') {
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        if (isMobile && hasUserGivenPermissionRef.current) {
+          console.warn('⚠️ Áudio pausado em dispositivo móvel - tentando retomar...');
+          audio.play().catch(err => {
+            console.warn('⚠️ Não foi possível retomar áudio automaticamente:', err);
+            setNeedsManualPlay(true);
+          });
+        }
+      }
+    }, 3000); // Verificar a cada 3 segundos
     
     const handleError = (e) => {
       // Ignorar erros de src vazio (isso é normal durante limpeza/reconfiguração)
@@ -2911,12 +3043,15 @@ const ListenerPlayer = () => {
     
     return () => {
       isMounted = false;
+      if (checkAudioPlaying) {
+        clearInterval(checkAudioPlaying);
+      }
       audio.removeEventListener('play', handlePlay);
       audio.removeEventListener('pause', handlePause);
       audio.removeEventListener('ended', handleEnded);
       audio.removeEventListener('error', handleError);
     };
-  }, []);
+  }, [isLive, connectionStatus]);
 
   return (
     <PageContainer>

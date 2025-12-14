@@ -4820,14 +4820,24 @@ const DJPanel = () => {
       }
       
       if (!searchResult || !searchResult.success || !searchResult.video) {
-        console.log('❌ Nenhum vídeo encontrado na internet');
+        console.error('❌ [downloadMusicFromInternet] Nenhum vídeo encontrado na internet');
+        console.error('❌ [downloadMusicFromInternet] Resposta do servidor:', searchResult);
+        
+        // Notificar o robô sobre o erro
+        if (socketRef.current && socketRef.current.connected) {
+          socketRef.current.emit('robot:answer', { 
+            answer: `Não encontrei ${songTitle}${artist ? ` de ${artist}` : ''} na internet. Tente outro nome.` 
+          });
+        }
+        
         return { 
           success: false, 
           message: searchResult?.message || 'Nenhuma música encontrada na internet' 
         };
       }
       
-      console.log('✅ Vídeo encontrado:', searchResult.video.title);
+      console.log('✅ [downloadMusicFromInternet] Vídeo encontrado:', searchResult.video.title);
+      console.log('✅ [downloadMusicFromInternet] URL:', searchResult.video.url);
       
       // Notificar o robô que encontrou e está baixando
       if (socketRef.current && socketRef.current.connected) {
@@ -4837,6 +4847,7 @@ const DJPanel = () => {
       }
       
       // Baixar o áudio
+      console.log('📥 [downloadMusicFromInternet] Iniciando download...');
       let downloadResponse;
       
       try {
@@ -4858,7 +4869,15 @@ const DJPanel = () => {
         if (contentType && contentType.includes('application/json')) {
           // Resposta é JSON (erro)
           const errorResult = await downloadResponse.json();
-          console.error('❌ Erro ao baixar música:', errorResult);
+          console.error('❌ [downloadMusicFromInternet] Erro ao baixar música:', errorResult);
+          
+          // Notificar o robô sobre o erro
+          if (socketRef.current && socketRef.current.connected) {
+            socketRef.current.emit('robot:answer', { 
+              answer: `Erro ao baixar ${songTitle}. ${errorResult.message || 'Tente novamente mais tarde.'}` 
+            });
+          }
+          
           return { 
             success: false, 
             message: errorResult.message || 'Erro ao baixar música da internet',
@@ -4867,12 +4886,22 @@ const DJPanel = () => {
         }
         
         if (!downloadResponse.ok) {
-          console.error('❌ Erro HTTP:', downloadResponse.status, downloadResponse.statusText);
+          console.error('❌ [downloadMusicFromInternet] Erro HTTP:', downloadResponse.status, downloadResponse.statusText);
+          
+          // Notificar o robô sobre o erro
+          if (socketRef.current && socketRef.current.connected) {
+            socketRef.current.emit('robot:answer', { 
+              answer: `Erro ao baixar ${songTitle} (${downloadResponse.status}). Tente novamente.` 
+            });
+          }
+          
           return { 
             success: false, 
             message: `Erro ao baixar música (${downloadResponse.status})` 
           };
         }
+        
+        console.log('✅ [downloadMusicFromInternet] Download iniciado com sucesso');
       } catch (error) {
         console.error('❌ Erro na requisição de download:', error);
         return { 
@@ -4887,12 +4916,25 @@ const DJPanel = () => {
         audioBlob = await downloadResponse.blob();
         
         // Verificar se o blob é válido
+        console.log('📊 [downloadMusicFromInternet] Tamanho do arquivo baixado:', audioBlob.size, 'bytes');
+        
         if (!audioBlob || audioBlob.size === 0) {
+          console.error('❌ [downloadMusicFromInternet] Arquivo baixado está vazio');
+          
+          // Notificar o robô sobre o erro
+          if (socketRef.current && socketRef.current.connected) {
+            socketRef.current.emit('robot:answer', { 
+              answer: `Erro: arquivo baixado está vazio. Tente novamente.` 
+            });
+          }
+          
           return { 
             success: false, 
             message: 'Arquivo baixado está vazio ou inválido' 
           };
         }
+        
+        console.log('✅ [downloadMusicFromInternet] Arquivo válido recebido');
       } catch (error) {
         console.error('❌ Erro ao converter resposta para Blob:', error);
         return { 

@@ -528,7 +528,7 @@ const RobotHead = styled.div`
   position: relative;
   z-index: 3;
   overflow: hidden;
-
+  
   &::before {
     content: '';
     position: absolute;
@@ -567,7 +567,7 @@ const RobotEye = styled.div`
     border-radius: 50%;
     opacity: 0.8;
   }
-
+  
   &::after {
     content: '';
     position: absolute;
@@ -595,7 +595,7 @@ const RobotSpeaker = styled.div`
   width: 24px;
   height: 6px;
   background: linear-gradient(90deg, 
-    #0f172a 0%, 
+    #0f172a 0%,
     #06b6d4 10%, 
     #0f172a 20%,
     #06b6d4 30%,
@@ -627,7 +627,7 @@ const RobotBody = styled.div`
     0 0 12px rgba(6, 182, 212, 0.3),
     inset 0 4px 8px rgba(6, 182, 212, 0.1);
   position: relative;
-
+  
   &::before {
     content: '⚡';
     position: absolute;
@@ -2806,9 +2806,22 @@ const MixerConsole = ({
     // Pegar o último pedido
     const lastRequest = songRequests[songRequests.length - 1];
     
-    // Verificar se é um pedido novo
+    // Verificar se é um pedido novo e válido
     if (lastRequest && lastRequest.id !== lastRequestIdRef.current) {
+      // Validar se o pedido tem os campos necessários
+      if (!lastRequest.song && !lastRequest.id) {
+        console.warn('⚠️ [MixerConsole] Pedido inválido ignorado:', lastRequest);
+        return;
+      }
+      
       lastRequestIdRef.current = lastRequest.id;
+      
+      console.log('🎵 [MixerConsole] Processando novo pedido:', {
+        id: lastRequest.id,
+        song: lastRequest.song,
+        artist: lastRequest.artist,
+        user: lastRequest.user
+      });
       
       // Processar pedido com filtro de profanidade
       const processRequest = async () => {
@@ -3717,8 +3730,8 @@ const MixerConsole = ({
         return;
       }
       
-      lastMessageIdRef.current = message.id;
-      
+        lastMessageIdRef.current = message.id;
+        
       const questionText = message.text.trim();
       
       // Verificar se é uma pergunta
@@ -5063,25 +5076,25 @@ const MixerConsole = ({
               <CircuitPattern />
               
               {/* Balão de fala do robô */}
-              {mascotMessage && mascotEnabled && (
+          {mascotMessage && mascotEnabled && (
                 <RobotSpeechBubble>
-                  {mascotMessage}
+              {mascotMessage}
                 </RobotSpeechBubble>
-              )}
+          )}
               
               {/* Robô Animado */}
               <RobotContainer style={{ opacity: mascotEnabled ? 1 : 0.4 }}>
-                <RobotAntenna $left />
-                <RobotAntenna $left={false} />
-                <RobotHead $talking={isMascotTalking && mascotEnabled}>
-                  <RobotEye $left />
-                  <RobotEye $left={false} />
-                  <RobotSpeaker $talking={isMascotTalking && mascotEnabled} />
-                </RobotHead>
-                <RobotBody />
-                <RobotArm $front $left />
-                <RobotArm $front $left={false} />
-              </RobotContainer>
+            <RobotAntenna $left />
+            <RobotAntenna $left={false} />
+            <RobotHead $talking={isMascotTalking && mascotEnabled}>
+              <RobotEye $left />
+              <RobotEye $left={false} />
+              <RobotSpeaker $talking={isMascotTalking && mascotEnabled} />
+            </RobotHead>
+            <RobotBody />
+            <RobotArm $front $left />
+            <RobotArm $front $left={false} />
+          </RobotContainer>
               
               {/* Overlay de dados */}
               <DataOverlay>
@@ -5093,19 +5106,19 @@ const MixerConsole = ({
             
             {/* Último comando reconhecido */}
             {lastVoiceCommand && (
-              <div style={{
+                <div style={{
                 marginTop: '8px',
                 padding: '6px 10px',
                 background: 'linear-gradient(135deg, rgba(6, 182, 212, 0.1) 0%, rgba(139, 92, 246, 0.1) 100%)',
                 border: '1px solid rgba(6, 182, 212, 0.3)',
-                borderRadius: '8px',
+              borderRadius: '8px',
                 textAlign: 'center'
               }}>
                 <div style={{
                   fontSize: '0.55rem',
                   color: '#64748b',
-                  textTransform: 'uppercase',
-                  letterSpacing: '1px',
+              textTransform: 'uppercase',
+              letterSpacing: '1px',
                   marginBottom: '2px'
                 }}>
                   ÚLTIMO COMANDO
@@ -5117,8 +5130,8 @@ const MixerConsole = ({
                 }}>
                   "{lastVoiceCommand}"
                 </div>
-              </div>
-            )}
+            </div>
+          )}
           </RobotDisplayContainer>
         </div>
 

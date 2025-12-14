@@ -48,10 +48,41 @@ const mascotService = {
   // Processar pedido (com filtro de profanidade)
   async processRequest(request) {
     try {
+      console.log('🎵 [mascotService] Enviando pedido para processar:', {
+        id: request?.id,
+        song: request?.song,
+        artist: request?.artist,
+        user: request?.user
+      });
+      
+      if (!request) {
+        throw new Error('Pedido não fornecido');
+      }
+      
+      if (!request.song && !request.id) {
+        console.warn('⚠️ [mascotService] Pedido sem song ou id, usando valores padrão');
+        // Criar um pedido válido com valores padrão se necessário
+        const validRequest = {
+          ...request,
+          song: request.song || request.id || 'Música desconhecida',
+          id: request.id || Date.now()
+        };
+        
+        const response = await apiClient.post('/api/mascot/process-request', { request: validRequest });
+        return response.data;
+      }
+      
       const response = await apiClient.post('/api/mascot/process-request', { request });
+      console.log('✅ [mascotService] Pedido processado com sucesso');
       return response.data;
     } catch (error) {
-      console.error('Erro ao processar pedido:', error);
+      console.error('❌ [mascotService] Erro ao processar pedido:', error);
+      console.error('❌ [mascotService] Detalhes do erro:', {
+        message: error.message,
+        status: error.response?.status,
+        data: error.response?.data,
+        request: request
+      });
       throw error;
     }
   },
